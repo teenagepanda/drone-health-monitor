@@ -1,0 +1,7 @@
+pymavlink
+pyserial
+psutil
+pandas
+python-dotenv
+opencv-python
+numpy
