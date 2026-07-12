@@ -132,7 +132,7 @@ def main():
     parser.add_argument("--baud", type=int, default=config.DEFAULT_BAUD)
     parser.add_argument("--duration", type=int, default=180, help="Test duration in seconds")
     parser.add_argument("--no-flight-controller", action="store_true", help="Run camera marker test only, without opening a MAVLink connection")
-    parser.add_argument("--show", action="store_true", help="Show the camera window during camera-only testing")
+    parser.add_argument("--show", action="store_true", help="Show the camera window and landing-debug overlay")
     parser.add_argument("--send-email", action="store_true", help="Send report to email after test")
     parser.add_argument("--detect-marker", action="store_true", help="Also test camera visual-marker detection during the health test")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index for visual-marker test")
@@ -152,7 +152,7 @@ def main():
     parser.add_argument("--landing-require-guided", action="store_true", default=True, help="Send real landing commands only in GUIDED mode")
     parser.add_argument("--landing-kp-xy", type=float, default=0.0008, help="Fallback pixel-error velocity gain when calibrated conversion is unavailable")
     parser.add_argument("--landing-kp-position", type=float, default=0.80, help="Horizontal position-error gain in 1/s when using calibrated meters")
-    parser.add_argument("--landing-calibration-csv", default="reports/height_calibration_summary.csv", help="Height calibration summary CSV")
+    parser.add_argument("--landing-calibration-csv", default="reports/height_calibration_clean.csv", help="Clean height calibration CSV")
     parser.add_argument("--landing-marker-size-m", type=float, default=0.20, help="Real printed marker side length in meters")
     parser.add_argument("--landing-disable-calibration", action="store_true", help="Disable height-aware pixel-to-meter conversion")
     parser.add_argument("--landing-max-xy-speed", type=float, default=0.25, help="Maximum horizontal correction speed in m/s")
@@ -162,6 +162,13 @@ def main():
     parser.add_argument("--landing-final-land", action="store_true", help="Request ArduPilot LAND when centered below landing-min-alt")
     parser.add_argument("--landing-invert-x", action="store_true", help="Invert forward/back correction if camera orientation requires it")
     parser.add_argument("--landing-invert-y", action="store_true", help="Invert left/right correction if camera orientation requires it")
+    parser.add_argument("--landing-min-confidence", type=float, default=0.90, help="Minimum marker confidence used by the landing controller, 0-1")
+    parser.add_argument("--landing-required-reference", default="original", help="Required template reference for landing")
+    parser.add_argument("--landing-stable-frames", type=int, default=5, help="Consecutive accepted frames required before alignment/descent")
+    parser.add_argument("--landing-center-tolerance-m", type=float, default=0.08, help="Horizontal centering tolerance in meters")
+    parser.add_argument("--landing-marker-lost-timeout", type=float, default=0.75, help="Seconds after marker loss before commanding a zero-velocity hold")
+    parser.add_argument("--landing-altitude-source", choices=["visual", "telemetry", "auto"], default="visual", help="Altitude used for landing-state decisions")
+    parser.add_argument("--landing-no-debug-log", action="store_true", help="Disable the dedicated landing-controller CSV log")
     args = parser.parse_args()
 
     if args.no_flight_controller:
@@ -190,7 +197,9 @@ def main():
     marker_best_detection = None
     marker_email_sent = False
     landing_controller = None
+    landing_debug_logger = None
     last_landing_print = 0.0
+    last_landing_command = None
 
     if args.autoland_on_marker:
         args.detect_marker = True
@@ -211,7 +220,17 @@ def main():
             final_land=args.landing_final_land,
             invert_x=args.landing_invert_x,
             invert_y=args.landing_invert_y,
+            min_confidence=args.landing_min_confidence,
+            required_reference=args.landing_required_reference,
+            stable_frames_required=args.landing_stable_frames,
+            center_tolerance_m=args.landing_center_tolerance_m,
+            marker_lost_timeout_s=args.landing_marker_lost_timeout,
+            altitude_source=args.landing_altitude_source,
         )
+        if not args.landing_no_debug_log:
+            from landing_debug import LandingDebugLogger
+            landing_debug_logger = LandingDebugLogger(args.log_dir)
+            print(f"Landing debug CSV: {landing_debug_logger.path}")
         mode = "REAL MAVLink commands" if args.enable_autolanding else "DRY-RUN only"
         print(f"Autonomous visual landing enabled: {mode}")
         if landing_controller.calibration is not None:
@@ -284,10 +303,25 @@ def main():
 
                     if landing_controller is not None:
                         landing_cmd = landing_controller.update(frame.shape, marker_detection, tel)
+                        last_landing_command = landing_cmd
+                        if landing_debug_logger is not None:
+                            landing_debug_logger.write(landing_cmd, time.time() - start)
                         now_landing = time.time()
                         if now_landing - last_landing_print >= 1.0:
                             last_landing_print = now_landing
                             print(f"Landing controller: {landing_cmd.message}")
+
+                        if args.show:
+                            from landing_debug import draw_landing_debug
+                            shown = draw_landing_debug(frame, marker_detection, landing_cmd)
+                            cv2.imshow("Visual landing dry-run/integration", shown)
+                            if cv2.waitKey(1) & 0xFF == ord("q"):
+                                break
+                    elif args.show:
+                        shown = draw_marker_detection(frame, marker_detection)
+                        cv2.imshow("Visual marker test", shown)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            break
                 else:
                     marker_status_text = f"Camera frame not received. {camera_frame.message}"
 
@@ -307,8 +341,12 @@ def main():
         logger.close()
         if landing_controller is not None:
             landing_controller.stop()
+        if landing_debug_logger is not None:
+            landing_debug_logger.close()
         if camera is not None:
             camera.close()
+        if args.show:
+            cv2.destroyAllWindows()
 
     print(f"CSV log saved: {logger.path}")
 
@@ -330,6 +368,17 @@ def main():
                         f"\nBest confidence: {best_score:.1f}%")
     if args.autoland_on_marker:
         summary += "\nAutonomous landing controller: " + ("REAL COMMANDS ENABLED" if args.enable_autolanding else "DRY-RUN ONLY")
+        if last_landing_command is not None:
+            summary += (
+                f"\nFinal landing state: {last_landing_command.state}"
+                f"\nVisual altitude: {last_landing_command.visual_alt_m}"
+                f"\nFlight-controller altitude: {last_landing_command.telemetry_alt_m}"
+                f"\nHorizontal error: ({last_landing_command.error_x_m}, {last_landing_command.error_y_m}) m"
+                f"\nCalculated velocity: ({last_landing_command.vx_mps}, {last_landing_command.vy_mps}, {last_landing_command.vz_mps}) m/s"
+                f"\nCommand block reason: {last_landing_command.block_reason or 'none'}"
+            )
+        if landing_debug_logger is not None:
+            summary += f"\nLanding debug CSV: {landing_debug_logger.path}"
     print(summary)
 
     if args.send_email:
