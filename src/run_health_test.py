@@ -33,7 +33,11 @@ def main():
     parser.add_argument("--autoland-on-marker", action="store_true", help="Run the visual landing controller when the marker is detected")
     parser.add_argument("--enable-autolanding", action="store_true", help="Actually send MAVLink velocity commands. Use only after safe bench/SITL tests")
     parser.add_argument("--landing-require-guided", action="store_true", default=True, help="Send real landing commands only in GUIDED mode")
-    parser.add_argument("--landing-kp-xy", type=float, default=0.0008, help="Pixel-error to horizontal velocity gain")
+    parser.add_argument("--landing-kp-xy", type=float, default=0.0008, help="Fallback pixel-error velocity gain when calibrated conversion is unavailable")
+    parser.add_argument("--landing-kp-position", type=float, default=0.80, help="Horizontal position-error gain in 1/s when using calibrated meters")
+    parser.add_argument("--landing-calibration-csv", default="reports/height_calibration_summary.csv", help="Height calibration summary CSV")
+    parser.add_argument("--landing-marker-size-m", type=float, default=0.20, help="Real printed marker side length in meters")
+    parser.add_argument("--landing-disable-calibration", action="store_true", help="Disable height-aware pixel-to-meter conversion")
     parser.add_argument("--landing-max-xy-speed", type=float, default=0.25, help="Maximum horizontal correction speed in m/s")
     parser.add_argument("--landing-descent-speed", type=float, default=0.20, help="Descent speed in m/s when marker is centered")
     parser.add_argument("--landing-center-tolerance-px", type=int, default=70, help="Allowed pixel error before descending")
@@ -73,6 +77,10 @@ def main():
             enable_commands=args.enable_autolanding,
             require_guided=args.landing_require_guided,
             kp_xy=args.landing_kp_xy,
+            kp_position=args.landing_kp_position,
+            calibration_csv=args.landing_calibration_csv,
+            marker_size_m=args.landing_marker_size_m,
+            use_calibration=not args.landing_disable_calibration,
             max_xy_speed_mps=args.landing_max_xy_speed,
             descent_speed_mps=args.landing_descent_speed,
             center_tolerance_px=args.landing_center_tolerance_px,
@@ -83,6 +91,12 @@ def main():
         )
         mode = "REAL MAVLink commands" if args.enable_autolanding else "DRY-RUN only"
         print(f"Autonomous visual landing enabled: {mode}")
+        if landing_controller.calibration is not None:
+            print(f"Camera calibration loaded: {landing_controller.calibration.describe()}")
+        elif args.landing_disable_calibration:
+            print("Camera calibration disabled: using pixel-gain fallback.")
+        else:
+            print(f"Camera calibration unavailable: {landing_controller.calibration_error}. Using pixel-gain fallback.")
         print("Safety: test first in SITL or with propellers removed. The script does not arm or take off.")
 
     if args.detect_marker:

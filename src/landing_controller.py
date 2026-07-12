@@ -6,6 +6,8 @@ from typing import Optional, Tuple
 
 from pymavlink import mavutil
 
+from camera_calibration import CameraCalibration
+
 
 @dataclass
 class LandingCommand:
@@ -41,6 +43,10 @@ class VisualLandingController:
         enable_commands: bool = False,
         require_guided: bool = True,
         kp_xy: float = 0.0008,
+        kp_position: float = 0.80,
+        calibration_csv: str = "reports/height_calibration_summary.csv",
+        marker_size_m: float = 0.20,
+        use_calibration: bool = True,
         max_xy_speed_mps: float = 0.25,
         descent_speed_mps: float = 0.20,
         center_tolerance_px: int = 70,
@@ -54,6 +60,18 @@ class VisualLandingController:
         self.enable_commands = enable_commands
         self.require_guided = require_guided
         self.kp_xy = kp_xy
+        self.kp_position = kp_position
+        self.calibration = None
+        self.calibration_error = None
+        if use_calibration:
+            try:
+                calibration = CameraCalibration(calibration_csv, marker_size_m)
+                if calibration.available:
+                    self.calibration = calibration
+                else:
+                    self.calibration_error = f"No valid center calibration rows in {calibration_csv}"
+            except Exception as exc:
+                self.calibration_error = str(exc)
         self.max_xy_speed_mps = max_xy_speed_mps
         self.descent_speed_mps = descent_speed_mps
         self.center_tolerance_px = center_tolerance_px
@@ -80,10 +98,24 @@ class VisualLandingController:
 
         centered = abs(err_x) <= self.center_tolerance_px and abs(err_y) <= self.center_tolerance_px
 
-        # Camera image error to horizontal velocity correction.
-        # If marker appears low in the image, move forward/back depending on camera mounting.
-        vx = self._clamp(-err_y * self.kp_xy, -self.max_xy_speed_mps, self.max_xy_speed_mps)
-        vy = self._clamp(err_x * self.kp_xy, -self.max_xy_speed_mps, self.max_xy_speed_mps)
+        rel_alt = getattr(telemetry, "relative_alt_m", None)
+        meters_per_pixel = None
+        error_x_m = None
+        error_y_m = None
+
+        # Prefer calibrated, height-aware conversion from pixels to meters.
+        # Fall back to the original pixel gain if altitude or calibration is unavailable.
+        if self.calibration is not None and rel_alt is not None and rel_alt > 0:
+            meters_per_pixel = self.calibration.meters_per_pixel(rel_alt)
+            error_x_m = err_x * meters_per_pixel
+            error_y_m = err_y * meters_per_pixel
+            vx = self._clamp(-error_y_m * self.kp_position, -self.max_xy_speed_mps, self.max_xy_speed_mps)
+            vy = self._clamp(error_x_m * self.kp_position, -self.max_xy_speed_mps, self.max_xy_speed_mps)
+            control_source = "CALIBRATED"
+        else:
+            vx = self._clamp(-err_y * self.kp_xy, -self.max_xy_speed_mps, self.max_xy_speed_mps)
+            vy = self._clamp(err_x * self.kp_xy, -self.max_xy_speed_mps, self.max_xy_speed_mps)
+            control_source = "PIXEL FALLBACK"
         if self.invert_x:
             vx = -vx
         if self.invert_y:
@@ -92,7 +124,6 @@ class VisualLandingController:
         # Descend only when approximately centered above marker.
         vz = self.descent_speed_mps if centered else 0.0
 
-        rel_alt = getattr(telemetry, "relative_alt_m", None)
         if rel_alt is not None and rel_alt <= self.min_landing_alt_m:
             vx = 0.0
             vy = 0.0
@@ -109,7 +140,16 @@ class VisualLandingController:
             self._send_velocity_command(vx, vy, vz, telemetry)
 
         mode = "REAL COMMAND" if self.enable_commands else "DRY RUN"
-        msg = f"{mode}: vx={vx:.2f}, vy={vy:.2f}, vz_down={vz:.2f}, centered={centered}, err=({err_x:.0f},{err_y:.0f}) px"
+        scale_text = (
+            f", scale={meters_per_pixel * 1000:.3f} mm/px, err_m=({error_x_m:.3f},{error_y_m:.3f})"
+            if meters_per_pixel is not None and error_x_m is not None and error_y_m is not None
+            else ""
+        )
+        msg = (
+            f"{mode}/{control_source}: vx={vx:.2f}, vy={vy:.2f}, vz_down={vz:.2f}, "
+            f"centered={centered}, alt={rel_alt if rel_alt is not None else 'N/A'}, "
+            f"err=({err_x:.0f},{err_y:.0f}) px{scale_text}"
+        )
         return LandingCommand(True, True, centered, err_x, err_y, vx, vy, vz, msg)
 
     def stop(self) -> None:
