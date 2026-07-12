@@ -7,16 +7,11 @@ from health_checks import check_drone_health
 from logger import CsvLogger
 from pi_health import get_cpu_temp_c, get_cpu_usage_percent, get_ram_usage_percent
 from report_generator import generate_report, text_summary
-from email_config import load_email_config
 from email_sender import send_email_report
 import config
 
 
 def main():
-    email_config = load_email_config()
-
-    if email_config is None:
-        return
     parser = argparse.ArgumentParser(description="Run timed drone health test and optionally send email report")
     parser.add_argument("--connection", default=config.DEFAULT_CONNECTION)
     parser.add_argument("--baud", type=int, default=config.DEFAULT_BAUD)
@@ -24,11 +19,28 @@ def main():
     parser.add_argument("--send-email", action="store_true", help="Send report to email after test")
     parser.add_argument("--detect-marker", action="store_true", help="Also test camera visual-marker detection during the health test")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index for visual-marker test")
-    parser.add_argument("--marker-reference", default="markers/reference_marker.png", help="Reference marker image path")
-    parser.add_argument("--marker-threshold", type=float, default=0.72, help="Visual-marker detection score threshold")
+    parser.add_argument("--camera-backend", choices=["auto", "picamera2", "opencv"], default="auto", help="Camera backend. Use picamera2 for Raspberry Pi CSI camera")
+    parser.add_argument("--marker-type", choices=["aruco", "template"], default="template", help="Marker detection method")
+    parser.add_argument("--aruco-id", type=int, default=23, help="Target ArUco marker ID")
+    parser.add_argument("--aruco-dictionary", choices=["4x4_50", "4x4_100", "5x5_50", "5x5_100", "6x6_50", "6x6_100"], default="4x4_50", help="ArUco dictionary")
+    parser.add_argument("--marker-reference", default="markers/references", help="Reference image or directory. Directory order: original, A, B, C ...")
+    parser.add_argument("--marker-threshold", type=float, default=0.72, help="Template detection score threshold")
     parser.add_argument("--email-on-marker", action="store_true", help="Send email immediately when the visual marker is detected")
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--report-dir", default="reports")
+
+    # Autonomous landing is OFF by default. Without --enable-autolanding it is dry-run only.
+    parser.add_argument("--autoland-on-marker", action="store_true", help="Run the visual landing controller when the marker is detected")
+    parser.add_argument("--enable-autolanding", action="store_true", help="Actually send MAVLink velocity commands. Use only after safe bench/SITL tests")
+    parser.add_argument("--landing-require-guided", action="store_true", default=True, help="Send real landing commands only in GUIDED mode")
+    parser.add_argument("--landing-kp-xy", type=float, default=0.0008, help="Pixel-error to horizontal velocity gain")
+    parser.add_argument("--landing-max-xy-speed", type=float, default=0.25, help="Maximum horizontal correction speed in m/s")
+    parser.add_argument("--landing-descent-speed", type=float, default=0.20, help="Descent speed in m/s when marker is centered")
+    parser.add_argument("--landing-center-tolerance-px", type=int, default=70, help="Allowed pixel error before descending")
+    parser.add_argument("--landing-min-alt", type=float, default=0.60, help="Stop visual descent below this relative altitude")
+    parser.add_argument("--landing-final-land", action="store_true", help="Request ArduPilot LAND when centered below landing-min-alt")
+    parser.add_argument("--landing-invert-x", action="store_true", help="Invert forward/back correction if camera orientation requires it")
+    parser.add_argument("--landing-invert-y", action="store_true", help="Invert left/right correction if camera orientation requires it")
     args = parser.parse_args()
 
     reader = MavlinkReader(args.connection, args.baud)
@@ -44,19 +56,51 @@ def main():
     print("Safety: first tests should be done without propellers.")
 
     marker_detector = None
+    draw_marker_detection = None
     camera = None
     marker_detected_once = False
+    marker_detection_elapsed = None
+    marker_best_detection = None
     marker_email_sent = False
+    landing_controller = None
+    last_landing_print = 0.0
+
+    if args.autoland_on_marker:
+        args.detect_marker = True
+        from landing_controller import VisualLandingController
+        landing_controller = VisualLandingController(
+            master=reader.master,
+            enable_commands=args.enable_autolanding,
+            require_guided=args.landing_require_guided,
+            kp_xy=args.landing_kp_xy,
+            max_xy_speed_mps=args.landing_max_xy_speed,
+            descent_speed_mps=args.landing_descent_speed,
+            center_tolerance_px=args.landing_center_tolerance_px,
+            min_landing_alt_m=args.landing_min_alt,
+            final_land=args.landing_final_land,
+            invert_x=args.landing_invert_x,
+            invert_y=args.landing_invert_y,
+        )
+        mode = "REAL MAVLink commands" if args.enable_autolanding else "DRY-RUN only"
+        print(f"Autonomous visual landing enabled: {mode}")
+        print("Safety: test first in SITL or with propellers removed. The script does not arm or take off.")
 
     if args.detect_marker:
-        import cv2
-        from visual_marker_detector import VisualMarkerDetector, draw_detection
+        from camera_capture import CameraCapture
+        if args.marker_type == "aruco":
+            from aruco_marker_detector import ArucoMarkerDetector, draw_aruco_detection
+            marker_detector = ArucoMarkerDetector(marker_id=args.aruco_id, dictionary_name=args.aruco_dictionary)
+            draw_marker_detection = draw_aruco_detection
+            print(f"Visual marker detection enabled: ArUco {args.aruco_dictionary} ID {args.aruco_id}")
+        else:
+            from visual_marker_detector import VisualMarkerDetector, draw_detection
+            marker_detector = VisualMarkerDetector(args.marker_reference, threshold=args.marker_threshold)
+            draw_marker_detection = draw_detection
+            print(f"Visual marker detection enabled: references {', '.join(marker_detector.reference_names)}")
 
-        marker_detector = VisualMarkerDetector(args.marker_reference, threshold=args.marker_threshold)
-        camera = cv2.VideoCapture(args.camera_index)
-        if not camera.isOpened():
-            raise RuntimeError(f"Could not open camera index {args.camera_index}")
-        print("Visual marker detection enabled.")
+        camera = CameraCapture(camera_index=args.camera_index, backend=args.camera_backend)
+        camera.open()
+        print(f"Camera backend: {camera.active_backend}")
 
     try:
         while time.time() - start < args.duration:
@@ -76,29 +120,39 @@ def main():
             if args.detect_marker and camera is not None and marker_detector is not None:
                 import cv2
                 from pathlib import Path
-                from visual_marker_detector import draw_detection
 
-                ok, frame = camera.read()
-                if ok:
+                camera_frame = camera.read()
+                if camera_frame.ok:
+                    frame = camera_frame.frame
                     marker_detection = marker_detector.detect(frame)
-                    marker_status_text = f"Marker detected={marker_detection.detected} | score={marker_detection.score:.2f}"
+                    if marker_best_detection is None or marker_detection.score > marker_best_detection.score:
+                        marker_best_detection = marker_detection
+                    marker_status_text = marker_detection.message
                     if marker_detection.detected and not marker_detected_once:
                         marker_detected_once = True
+                        marker_detection_elapsed = time.time() - start
                         detected_frame_path = Path(args.report_dir) / "marker_detected.jpg"
                         detected_frame_path.parent.mkdir(parents=True, exist_ok=True)
-                        cv2.imwrite(str(detected_frame_path), draw_detection(frame, marker_detection))
-                        print(f"✅ Visual marker detected | score={marker_detection.score:.2f}")
+                        cv2.imwrite(str(detected_frame_path), draw_marker_detection(frame, marker_detection))
+                        print(f"✅ Visual marker detected | {marker_detection.message} | detection time={marker_detection_elapsed:.2f}s")
                         print(f"Detected marker frame saved: {detected_frame_path}")
                         if args.email_on_marker and not marker_email_sent:
                             send_email_report(
                                 subject="Drone Visual Marker Detected",
-                                body=f"The drone camera detected the visual marker. Detection score: {marker_detection.score:.2f}",
+                                body=f"The drone camera detected the visual marker.\n{marker_detection.message}\nDetection time from test start: {marker_detection_elapsed:.2f} seconds",
                                 attachments=[str(detected_frame_path)],
                             )
                             marker_email_sent = True
                             print("Marker detection email sent successfully.")
+
+                    if landing_controller is not None:
+                        landing_cmd = landing_controller.update(frame.shape, marker_detection, tel)
+                        now_landing = time.time()
+                        if now_landing - last_landing_print >= 1.0:
+                            last_landing_print = now_landing
+                            print(f"Landing controller: {landing_cmd.message}")
                 else:
-                    marker_status_text = "Camera frame not received"
+                    marker_status_text = f"Camera frame not received. {camera_frame.message}"
 
             now = time.time()
             if now - last_print >= config.STATUS_PRINT_INTERVAL_SECONDS:
@@ -114,8 +168,10 @@ def main():
         print("\nTest stopped by user.")
     finally:
         logger.close()
+        if landing_controller is not None:
+            landing_controller.stop()
         if camera is not None:
-            camera.release()
+            camera.close()
 
     print(f"CSV log saved: {logger.path}")
 
@@ -124,7 +180,19 @@ def main():
 
     summary = text_summary(str(logger.path))
     if args.detect_marker:
-        summary += "\n\nVisual marker test: " + ("DETECTED" if marker_detected_once else "NOT DETECTED")
+        if marker_detected_once:
+            summary += (f"\n\nVisual marker test: DETECTED"
+                        f"\nReference: {getattr(marker_best_detection, 'reference_name', None) or 'N/A'}"
+                        f"\nConfidence: {marker_best_detection.score * 100:.1f}%"
+                        f"\nDetection time: {marker_detection_elapsed:.2f} s")
+        else:
+            best_ref = getattr(marker_best_detection, 'reference_name', None) if marker_best_detection else None
+            best_score = marker_best_detection.score * 100 if marker_best_detection else 0.0
+            summary += (f"\n\nVisual marker test: NOT DETECTED"
+                        f"\nBest reference: {best_ref or 'none'}"
+                        f"\nBest confidence: {best_score:.1f}%")
+    if args.autoland_on_marker:
+        summary += "\nAutonomous landing controller: " + ("REAL COMMANDS ENABLED" if args.enable_autolanding else "DRY-RUN ONLY")
     print(summary)
 
     if args.send_email:
