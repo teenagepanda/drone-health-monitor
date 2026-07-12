@@ -1,0 +1,6 @@
+{
+  "x_correct": null,
+  "y_correct": null,
+  "x_notes": "Set true after confirming right/left response.",
+  "y_notes": "Set true after confirming forward/back response."
+}
