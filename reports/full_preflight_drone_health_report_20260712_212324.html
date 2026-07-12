@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>Drone Full Pre-Flight Health Report</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 30px; direction: rtl; }
+table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+td, th { border: 1px solid #cccccc; padding: 10px; text-align: right; }
+th { background: #eeeeee; }
+.box { background: #f7f7f7; border: 1px solid #dddddd; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+.overall { font-size: 22px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>דוח תקינות Pre-Flight מלא לרחפן</h1>
+<p><b>תאריך יצירה:</b> 2026-07-12 21:23:24</p>
+<p><b>קובץ לוג:</b> drone_health_20260712_212154.csv</p>
+<p><b>מספר דגימות:</b> 394</p>
+
+<div class="box">
+<h2>סטטוס כללי</h2>
+<p class="overall">❌ לא מוכן לטיסה</p>
+<p>חובה לתקן - שלט RC / ELRS: זוהו רק 0 ערוצים. נדרשים לפחות 4 ערוצים.<br>חובה לתקן - Failsafe: RC Failsafe פעיל (1); Battery Failsafe לא פעיל; GCS Failsafe=0; EKF Failsafe Action=1; RTL_ALT=1500cm.<br>חובה לתקן - Home Position: לא התקבל HOME_POSITION. עבור RTL חובה לוודא Home Position לפני טיסה.<br>חובה לתקן - PreArm Checks: PreArm: RC not found | PreArm: Check mag field (xy diff:108>100) | PreArm: Check mag field (xy diff:144>100) | PreArm: Check mag field (xy diff:136>100) | PreArm: Check mag field (xy diff:122>100)<br>חובה לתקן - GPS Quality: Fix Type 4, לוויינים 6, HDOP 15.46.<br>חובה לתקן - הודעות בקר טיסה: זוהו 11 הודעות שגיאה. הודעה אחרונה: PreArm: Check mag field (xy diff:122>100)</p>
+</div>
+
+<div class="box">
+<h2>סיכום פשוט למשתמש</h2>
+<table>
+<tr><th>מערכת</th><th>מצב</th><th>פירוט</th></tr>
+<tr><td><b>תקשורת Pixhawk ↔ Raspberry Pi</b></td><td>✅ תקין</td><td>התקבלו הודעות MAVLink ו־Heartbeat. מצב טיסה: STABILIZE, Armed: False.</td></tr><tr><td><b>מצב טיסה</b></td><td>✅ מזוהה</td><td>STABILIZE — מתאים לבדיקה ידנית, אך לא אידיאלי למשימת נחיתה אוטונומית.</td></tr><tr><td><b>שלט RC / ELRS</b></td><td>❌ לא תקין</td><td>זוהו רק 0 ערוצים. נדרשים לפחות 4 ערוצים.</td></tr><tr><td><b>Failsafe</b></td><td>⚠️ אזהרה</td><td>RC Failsafe פעיל (1); Battery Failsafe לא פעיל; GCS Failsafe=0; EKF Failsafe Action=1; RTL_ALT=1500cm.</td></tr><tr><td><b>Home Position</b></td><td>❌ לא תקין</td><td>לא התקבל HOME_POSITION. עבור RTL חובה לוודא Home Position לפני טיסה.</td></tr><tr><td><b>PreArm Checks</b></td><td>❌ לא תקין</td><td>PreArm: RC not found | PreArm: Check mag field (xy diff:108>100) | PreArm: Check mag field (xy diff:144>100) | PreArm: Check mag field (xy diff:136>100) | PreArm: Check mag field (xy diff:122>100)</td></tr><tr><td><b>Gyroscope</b></td><td>✅ תקין</td><td>החיישן מזוהה ובריא לפי SYS_STATUS.</td></tr><tr><td><b>Accelerometer</b></td><td>✅ תקין</td><td>החיישן מזוהה ובריא לפי SYS_STATUS.</td></tr><tr><td><b>Compass Sensor</b></td><td>✅ תקין</td><td>החיישן מזוהה ובריא לפי SYS_STATUS.</td></tr><tr><td><b>Barometer</b></td><td>✅ תקין</td><td>החיישן מזוהה ובריא לפי SYS_STATUS.</td></tr><tr><td><b>GPS Sensor</b></td><td>✅ תקין</td><td>החיישן מזוהה ובריא לפי SYS_STATUS.</td></tr><tr><td><b>סוללה</b></td><td>✅ תקינה</td><td>מתח ממוצע 22.35V, מתח מינימלי 22.34V, אחוז ממוצע 80%.</td></tr><tr><td><b>GPS Quality</b></td><td>❌ לא יציב</td><td>Fix Type 4, לוויינים 6, HDOP 15.46.</td></tr><tr><td><b>EKF</b></td><td>✅ תקין</td><td>Variance נמוך. Compass variance 0.09.</td></tr><tr><td><b>רעידות IMU</b></td><td>✅ תקין</td><td>RMS ממוצע 0.959 m/s².</td></tr><tr><td><b>IMU Clipping</b></td><td>✅ תקין</td><td>לא זוהו חריגות Clipping.</td></tr><tr><td><b>מנועים / PWM</b></td><td>✅ תקין במצב DISARM</td><td>יציאות המנועים 1–4 הן 0, תקין כאשר הרחפן לא חמוש.</td></tr><tr><td><b>הודעות בקר טיסה</b></td><td>⚠️ אזהרה</td><td>זוהו 11 הודעות שגיאה. הודעה אחרונה: PreArm: Check mag field (xy diff:122>100)</td></tr><tr><td><b>Raspberry Pi</b></td><td>✅ תקין</td><td>טמפרטורה 52.2°C, CPU 9.7%, RAM 8.3%.</td></tr>
+</table>
+</div>
+
+<h2>נתונים מספריים</h2>
+<table>
+<tr><th>מדד</th><th>ממוצע</th><th>מינימום</th><th>מקסימום</th><th>יחידה</th></tr>
+<tr><td>MAVLink Messages</td><td>7904.30</td><td>49.00</td><td>15694.00</td><td></td></tr><tr><td>Heartbeat Count</td><td>44.73</td><td>0.00</td><td>89.00</td><td></td></tr><tr><td>RC RSSI</td><td>0.00</td><td>0.00</td><td>0.00</td><td></td></tr><tr><td>RC Channel Count</td><td>0.00</td><td>0.00</td><td>0.00</td><td></td></tr><tr><td>FS_THR_ENABLE</td><td>1.00</td><td>1.00</td><td>1.00</td><td></td></tr><tr><td>FS_BATT_ENABLE</td><td>N/A</td><td>N/A</td><td>N/A</td><td></td></tr><tr><td>FS_GCS_ENABLE</td><td>0.00</td><td>0.00</td><td>0.00</td><td></td></tr><tr><td>FS_EKF_ACTION</td><td>1.00</td><td>1.00</td><td>1.00</td><td></td></tr><tr><td>RTL_ALT</td><td>1500.00</td><td>1500.00</td><td>1500.00</td><td>cm</td></tr><tr><td>Battery Voltage</td><td>22.35</td><td>22.34</td><td>22.35</td><td>V</td></tr><tr><td>Battery Current</td><td>0.92</td><td>0.87</td><td>0.93</td><td>A</td></tr><tr><td>GPS Satellites</td><td>6.11</td><td>4.00</td><td>9.00</td><td></td></tr><tr><td>GPS HDOP</td><td>15.46</td><td>2.97</td><td>71.89</td><td></td></tr><tr><td>Relative Altitude</td><td>-0.76</td><td>-1.30</td><td>-0.44</td><td>m</td></tr><tr><td>EKF Compass Variance</td><td>0.09</td><td>0.00</td><td>0.31</td><td></td></tr><tr><td>EKF Velocity Variance</td><td>0.00</td><td>0.00</td><td>0.00</td><td></td></tr><tr><td>RAW_IMU Vibration RMS</td><td>0.96</td><td>0.58</td><td>1.38</td><td>m/s²</td></tr><tr><td>VIBE X</td><td>0.10</td><td>0.01</td><td>1.75</td><td></td></tr><tr><td>VIBE Y</td><td>0.10</td><td>0.02</td><td>1.15</td><td></td></tr><tr><td>VIBE Z</td><td>0.08</td><td>0.02</td><td>0.88</td><td></td></tr><tr><td>CPU Temperature</td><td>52.19</td><td>49.90</td><td>54.30</td><td>°C</td></tr><tr><td>CPU Usage</td><td>9.67</td><td>3.40</td><td>19.40</td><td>%</td></tr><tr><td>RAM Usage</td><td>8.26</td><td>7.50</td><td>8.60</td><td>%</td></tr>
+</table>
+
+<h2>ספירת מצבי מערכת</h2>
+<pre>{'CRITICAL': 394}</pre>
+
+<h2>הערה</h2>
+<p>
+הדוח הוא בדיקת Pre-Flight אוטומטית. לפני טיסה אמיתית יש לאמת ידנית גם:
+כיוון מנועים, כיול מצפן, Failsafe, ARM/DISARM, ובדיקת Mission Planner/QGroundControl.
+</p>
+</body>
+</html>
