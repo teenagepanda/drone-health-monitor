@@ -1,5 +1,8 @@
 import argparse
 import time
+from pathlib import Path
+
+import cv2
 
 from mavlink_reader import MavlinkReader
 from vibration import VibrationAnalyzer
@@ -11,11 +14,125 @@ from email_sender import send_email_report
 import config
 
 
+
+def run_camera_only(args) -> None:
+    """Run marker detection without creating any MAVLink connection."""
+    from camera_capture import CameraCapture
+
+    if args.marker_type == "aruco":
+        from aruco_marker_detector import ArucoMarkerDetector, draw_aruco_detection
+
+        detector = ArucoMarkerDetector(
+            marker_id=args.aruco_id,
+            dictionary_name=args.aruco_dictionary,
+        )
+        draw_detection = draw_aruco_detection
+        description = f"ArUco {args.aruco_dictionary} ID {args.aruco_id}"
+    else:
+        from visual_marker_detector import VisualMarkerDetector, draw_detection
+
+        detector = VisualMarkerDetector(
+            args.marker_reference,
+            threshold=args.marker_threshold,
+        )
+        description = f"references {', '.join(detector.reference_names)}"
+
+    camera = CameraCapture(
+        camera_index=args.camera_index,
+        backend=args.camera_backend,
+    )
+    camera.open()
+
+    print(f"Camera-only test started for {args.duration} seconds.")
+    print("Flight controller connection: DISABLED")
+    print(f"Camera backend: {camera.active_backend}")
+    print(f"Visual marker detection: {description}")
+    if args.autoland_on_marker or args.enable_autolanding:
+        print("Autonomous landing is disabled in camera-only mode.")
+
+    start = time.time()
+    last_print = 0.0
+    detected_once = False
+    best_detection = None
+    detection_elapsed = None
+    saved_frame_path = Path(args.report_dir) / "marker_detected_camera_only.jpg"
+
+    try:
+        while time.time() - start < args.duration:
+            camera_frame = camera.read()
+            if not camera_frame.ok:
+                print(f"Camera frame not received. {camera_frame.message}")
+                time.sleep(0.20)
+                continue
+
+            frame = camera_frame.frame
+            detection = detector.detect(frame)
+            elapsed = time.time() - start
+
+            if best_detection is None or detection.score > best_detection.score:
+                best_detection = detection
+
+            if detection.detected and not detected_once:
+                detected_once = True
+                detection_elapsed = elapsed
+                saved_frame_path.parent.mkdir(parents=True, exist_ok=True)
+                annotated = draw_detection(frame, detection)
+                cv2.imwrite(str(saved_frame_path), annotated)
+                print(
+                    f"Visual marker detected | {detection.message} | "
+                    f"detection time={detection_elapsed:.2f}s"
+                )
+                print(f"Detected frame saved: {saved_frame_path}")
+
+                if args.email_on_marker:
+                    send_email_report(
+                        subject="Drone Camera-Only Marker Test",
+                        body=(
+                            "The visual marker was detected in camera-only mode.\n"
+                            f"{detection.message}\n"
+                            f"Detection time: {detection_elapsed:.2f} seconds"
+                        ),
+                        attachments=[str(saved_frame_path)],
+                    )
+                    print("Marker detection email sent successfully.")
+
+            now = time.time()
+            if now - last_print >= 1.0:
+                last_print = now
+                print(f"Camera-only marker status: {detection.message}")
+
+            if args.show:
+                shown = draw_detection(frame, detection)
+                cv2.imshow("Camera-only visual marker test", shown)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        print("\nCamera-only test stopped by user.")
+    finally:
+        camera.close()
+        if args.show:
+            cv2.destroyAllWindows()
+
+    if detected_once:
+        print(f"FINAL RESULT: DETECTED | detection time={detection_elapsed:.2f}s")
+    elif best_detection is not None:
+        print(
+            "FINAL RESULT: NOT DETECTED | "
+            f"best reference={getattr(best_detection, 'reference_name', None) or 'none'} | "
+            f"best confidence={best_detection.score * 100:.1f}%"
+        )
+    else:
+        print("FINAL RESULT: NOT DETECTED | no valid camera frames")
+
 def main():
     parser = argparse.ArgumentParser(description="Run timed drone health test and optionally send email report")
     parser.add_argument("--connection", default=config.DEFAULT_CONNECTION)
     parser.add_argument("--baud", type=int, default=config.DEFAULT_BAUD)
     parser.add_argument("--duration", type=int, default=180, help="Test duration in seconds")
+    parser.add_argument("--no-flight-controller", action="store_true", help="Run camera marker test only, without opening a MAVLink connection")
+    parser.add_argument("--show", action="store_true", help="Show the camera window during camera-only testing")
     parser.add_argument("--send-email", action="store_true", help="Send report to email after test")
     parser.add_argument("--detect-marker", action="store_true", help="Also test camera visual-marker detection during the health test")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index for visual-marker test")
@@ -46,6 +163,12 @@ def main():
     parser.add_argument("--landing-invert-x", action="store_true", help="Invert forward/back correction if camera orientation requires it")
     parser.add_argument("--landing-invert-y", action="store_true", help="Invert left/right correction if camera orientation requires it")
     args = parser.parse_args()
+
+    if args.no_flight_controller:
+        if args.enable_autolanding:
+            parser.error("--enable-autolanding cannot be used with --no-flight-controller")
+        run_camera_only(args)
+        return
 
     reader = MavlinkReader(args.connection, args.baud)
     reader.connect()
