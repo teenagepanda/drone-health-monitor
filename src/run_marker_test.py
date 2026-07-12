@@ -39,6 +39,9 @@ def _append_calibration_csv(path: Path, rows: list[dict]) -> None:
     fieldnames = [
         "timestamp",
         "real_height_m",
+        "test_type",
+        "planned_offset_x_cm",
+        "planned_offset_y_cm",
         "reference",
         "confidence_percent",
         "marker_width_px",
@@ -56,6 +59,17 @@ def _append_calibration_csv(path: Path, rows: list[dict]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def _append_summary_csv(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(row.keys())
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def main():
@@ -91,8 +105,31 @@ def main():
     )
     parser.add_argument(
         "--calibration-output",
-        default="reports/height_calibration.csv",
-        help="CSV output file for calibration samples",
+        default="reports/height_calibration_raw.csv",
+        help="CSV output file for raw calibration samples",
+    )
+    parser.add_argument(
+        "--calibration-summary-output",
+        default="reports/height_calibration_summary.csv",
+        help="CSV output file for one summary row per calibration run",
+    )
+    parser.add_argument(
+        "--test-type",
+        choices=["center", "right", "left", "forward", "backward", "custom"],
+        default="center",
+        help="Calibration series label saved in the CSV",
+    )
+    parser.add_argument(
+        "--offset-x",
+        type=float,
+        default=0.0,
+        help="Planned physical X offset in cm; right is positive and left is negative",
+    )
+    parser.add_argument(
+        "--offset-y",
+        type=float,
+        default=0.0,
+        help="Planned physical Y offset in cm; forward is positive and backward is negative",
     )
     parser.add_argument(
         "--calibration-samples",
@@ -118,6 +155,17 @@ def main():
         if args.calibration_interval < 0:
             parser.error("--calibration-interval cannot be negative")
 
+        expected_offsets = {
+            "center": (0.0, 0.0),
+            "right": (5.0, 0.0),
+            "left": (-5.0, 0.0),
+            "forward": (0.0, 5.0),
+            "backward": (0.0, -5.0),
+        }
+        # Apply useful defaults only when the operator did not explicitly enter offsets.
+        if args.test_type in expected_offsets and args.offset_x == 0.0 and args.offset_y == 0.0:
+            args.offset_x, args.offset_y = expected_offsets[args.test_type]
+
     if args.marker_type == "aruco":
         from aruco_marker_detector import ArucoMarkerDetector, draw_aruco_detection
 
@@ -140,7 +188,8 @@ def main():
     if args.calibrate_height:
         print(
             f"HEIGHT CALIBRATION MODE | real height={args.real_height:.3f} m | "
-            f"target samples={args.calibration_samples} | output={args.calibration_output}"
+            f"series={args.test_type} | planned offset=({args.offset_x:+.1f}, {args.offset_y:+.1f}) cm | "
+            f"target samples={args.calibration_samples} | raw output={args.calibration_output}"
         )
 
     start = time.time()
@@ -195,6 +244,9 @@ def main():
                     row = {
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "real_height_m": args.real_height,
+                        "test_type": args.test_type,
+                        "planned_offset_x_cm": args.offset_x,
+                        "planned_offset_y_cm": args.offset_y,
                         "reference": getattr(detection, "reference_name", None) or "N/A",
                         "confidence_percent": detection.score * 100.0,
                         **geometry,
@@ -206,7 +258,9 @@ def main():
                     last_calibration_record = now
                     print(
                         f"CALIBRATION {len(calibration_rows)}/{args.calibration_samples} | "
-                        f"height={args.real_height:.2f}m | width={geometry['marker_width_px']:.1f}px | "
+                        f"height={args.real_height:.2f}m | series={args.test_type} | "
+                        f"planned offset=({args.offset_x:+.1f},{args.offset_y:+.1f})cm | "
+                        f"width={geometry['marker_width_px']:.1f}px | "
                         f"height_px={geometry['marker_height_px']:.1f}px | "
                         f"area={geometry['marker_area_px2']:.0f}px^2 | confidence={detection.score * 100:.1f}%"
                     )
@@ -265,12 +319,44 @@ def main():
             heights = [row["marker_height_px"] for row in calibration_rows]
             areas = [row["marker_area_px2"] for row in calibration_rows]
             confidences = [row["confidence_percent"] for row in calibration_rows]
+            fps_values = [row["fps"] for row in calibration_rows]
+            processing_values = [row["processing_time_ms"] for row in calibration_rows]
+            elapsed_values = [row["elapsed_s"] for row in calibration_rows]
+
+            def sample_stdev(values):
+                return statistics.stdev(values) if len(values) > 1 else 0.0
+
+            summary_row = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "real_height_m": args.real_height,
+                "test_type": args.test_type,
+                "planned_offset_x_cm": args.offset_x,
+                "planned_offset_y_cm": args.offset_y,
+                "samples": len(calibration_rows),
+                "avg_marker_width_px": statistics.mean(widths),
+                "stdev_marker_width_px": sample_stdev(widths),
+                "avg_marker_height_px": statistics.mean(heights),
+                "stdev_marker_height_px": sample_stdev(heights),
+                "avg_marker_area_px2": statistics.mean(areas),
+                "stdev_marker_area_px2": sample_stdev(areas),
+                "avg_confidence_percent": statistics.mean(confidences),
+                "stdev_confidence_percent": sample_stdev(confidences),
+                "avg_fps": statistics.mean(fps_values),
+                "avg_processing_time_ms": statistics.mean(processing_values),
+                "first_accepted_sample_elapsed_s": min(elapsed_values),
+                "last_accepted_sample_elapsed_s": max(elapsed_values),
+            }
+            summary_path = Path(args.calibration_summary_output)
+            _append_summary_csv(summary_path, summary_row)
             print(
                 f"CALIBRATION SUMMARY | samples={len(calibration_rows)} | real height={args.real_height:.3f}m | "
-                f"avg width={statistics.mean(widths):.1f}px | avg height={statistics.mean(heights):.1f}px | "
-                f"avg area={statistics.mean(areas):.0f}px^2 | avg confidence={statistics.mean(confidences):.1f}%"
+                f"series={args.test_type} | offset=({args.offset_x:+.1f},{args.offset_y:+.1f})cm | "
+                f"avg width={statistics.mean(widths):.1f}px (SD={sample_stdev(widths):.1f}) | "
+                f"avg height={statistics.mean(heights):.1f}px | avg area={statistics.mean(areas):.0f}px^2 | "
+                f"avg confidence={statistics.mean(confidences):.1f}% | avg FPS={statistics.mean(fps_values):.1f}"
             )
-            print(f"Calibration data appended to: {output_path}")
+            print(f"Raw calibration data appended to: {output_path}")
+            print(f"Run summary appended to: {summary_path}")
         else:
             print("CALIBRATION SUMMARY | no valid detections recorded; CSV was not changed.")
 
