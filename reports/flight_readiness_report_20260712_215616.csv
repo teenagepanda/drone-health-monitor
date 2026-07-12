@@ -1,0 +1,23 @@
+section,section_status,section_score,check,check_status,value,details,check_score
+Software integration,WARNING,88.33,Project version,WARNING,V17,V18 is the readiness-report release.,65.00
+Software integration,WARNING,88.33,Required source files,PASS,6/6,All required integration files exist.,100.00
+Software integration,WARNING,88.33,Python syntax,PASS,all files compile,,100.00
+Height calibration,PASS,100.00,Calibration height points,PASS,8/8,All expected heights exist.,100.00
+Height calibration,PASS,100.00,Monotonic marker size,PASS,decreases with height,Marker size decreases at every higher point.,100.00
+Height calibration,PASS,100.00,Marker geometry consistency,PASS,max side ratio=1.148,Near 1.0 indicates a square marker.,100.00
+Height calibration,PASS,100.00,Calibration confidence,PASS,92.5%,Target is at least 90.0%.,100.00
+Landing controller,PASS,100.00,Marker detection rate,PASS,95.5%,85 detections out of 89 updates.,100.00
+Landing controller,PASS,100.00,Landing reference,PASS,original,Landing control should accept only original.,100.00
+Landing controller,PASS,100.00,Marker confidence,PASS,93.2%,Target is at least 90.0%.,100.00
+Landing controller,PASS,100.00,Controller state progression,PASS,"ACQUIRING, ALIGNING, SEARCHING","Expected ALIGNING, DESCENDING or HOLD_MIN_ALT.",100.00
+Landing controller,PASS,100.00,Velocity calculation,PASS,85 valid rows,At least one non-zero command should be calculated.,100.00
+Landing controller,PASS,100.00,Dry-run protection,PASS,commands blocked,commands disabled; no prior marker lock,100.00
+Landing controller,PASS,100.00,Visual altitude,PASS,2.000m avg,Visual altitude must be available.,100.00
+Visual height validation,WARNING,76.67,Mean visual-height error,WARNING,0.108m,Limit: 0.080m.,65.00
+Visual height validation,WARNING,76.67,Maximum visual-height error,WARNING,0.202m,Limit: 0.150m.,65.00
+Visual height validation,WARNING,76.67,Validated heights,PASS,4,0.50m->0.702m (err 0.202m); 1.00m->1.148m (err 0.148m); 1.50m->1.582m (err 0.082m); 2.00m->2.000m (err 0.000m),100.00
+Horizontal direction test,WARNING,0.00,X/Y direction confirmation,NOT_TESTED,manual confirmation missing,"Create JSON: {""x_correct"": true, ""y_correct"": true}.",40.00
+Flight controller and RC,WARNING,65.00,Pixhawk MAVLink,WARNING,verify from latest health run,V18 does not duplicate the live MAVLink health monitor.,65.00
+Flight controller and RC,WARNING,65.00,RC / ELRS,NOT_TESTED,pending transmitter test,Required before first flight.,40.00
+Flight controller and RC,WARNING,65.00,GPS / Home Position,NOT_TESTED,outdoor test pending,Expected to remain unavailable indoors.,40.00
+Flight controller and RC,WARNING,65.00,Arming and GUIDED,NOT_TESTED,prop-less bench test pending,Do not test with propellers installed until prior checks pass.,40.00

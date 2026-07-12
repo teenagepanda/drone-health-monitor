@@ -1,0 +1,97 @@
+============================================================================
+AUTONOMOUS LANDING FLIGHT READINESS REPORT
+============================================================================
+Generated: 2026-07-12T21:56:16
+Version:   V17
+Profile:   prop-less
+
+1. SOFTWARE INTEGRATION
+----------------------------------------------------------------------------
+[WARN] Project version — V17
+       V18 is the readiness-report release.
+[PASS] Required source files — 6/6
+       All required integration files exist.
+[PASS] Python syntax — all files compile
+Section result: WARNING | Score: 88.3%
+
+2. HEIGHT CALIBRATION
+----------------------------------------------------------------------------
+[PASS] Calibration height points — 8/8
+       All expected heights exist.
+[PASS] Monotonic marker size — decreases with height
+       Marker size decreases at every higher point.
+[PASS] Marker geometry consistency — max side ratio=1.148
+       Near 1.0 indicates a square marker.
+[PASS] Calibration confidence — 92.5%
+       Target is at least 90.0%.
+Section result: PASS | Score: 100.0%
+
+3. LANDING CONTROLLER
+----------------------------------------------------------------------------
+[PASS] Marker detection rate — 95.5%
+       85 detections out of 89 updates.
+[PASS] Landing reference — original
+       Landing control should accept only original.
+[PASS] Marker confidence — 93.2%
+       Target is at least 90.0%.
+[PASS] Controller state progression — ACQUIRING, ALIGNING, SEARCHING
+       Expected ALIGNING, DESCENDING or HOLD_MIN_ALT.
+[PASS] Velocity calculation — 85 valid rows
+       At least one non-zero command should be calculated.
+[PASS] Dry-run protection — commands blocked
+       commands disabled; no prior marker lock
+[PASS] Visual altitude — 2.000m avg
+       Visual altitude must be available.
+Section result: PASS | Score: 100.0%
+
+4. VISUAL HEIGHT VALIDATION
+----------------------------------------------------------------------------
+[WARN] Mean visual-height error — 0.108m
+       Limit: 0.080m.
+[WARN] Maximum visual-height error — 0.202m
+       Limit: 0.150m.
+[PASS] Validated heights — 4
+       0.50m->0.702m (err 0.202m); 1.00m->1.148m (err 0.148m); 1.50m->1.582m (err 0.082m); 2.00m->2.000m (err 0.000m)
+Section result: WARNING | Score: 76.7%
+
+5. HORIZONTAL DIRECTION TEST
+----------------------------------------------------------------------------
+[N/T ] X/Y direction confirmation — manual confirmation missing
+       Create JSON: {"x_correct": true, "y_correct": true}.
+Section result: WARNING | Score: 0.0%
+
+6. FLIGHT CONTROLLER AND RC
+----------------------------------------------------------------------------
+[WARN] Pixhawk MAVLink — verify from latest health run
+       V18 does not duplicate the live MAVLink health monitor.
+[N/T ] RC / ELRS — pending transmitter test
+       Required before first flight.
+[N/T ] GPS / Home Position — outdoor test pending
+       Expected to remain unavailable indoors.
+[N/T ] Arming and GUIDED — prop-less bench test pending
+       Do not test with propellers installed until prior checks pass.
+Section result: WARNING | Score: 65.0%
+
+============================================================================
+FINAL RESULT
+============================================================================
+Overall score:  71.7%
+Overall status: WARNING
+Readiness:      READY FOR PROP-LESS TEST
+
+ACTIONS REQUIRED
+----------------------------------------------------------------------------
+- Complete/verify — Software integration: Project version
+- Complete/verify — Visual height validation: Mean visual-height error
+- Complete/verify — Visual height validation: Maximum visual-height error
+- Complete/verify — Horizontal direction test: X/Y direction confirmation
+- Complete/verify — Flight controller and RC: Pixhawk MAVLink
+- Complete/verify — Flight controller and RC: RC / ELRS
+- Complete/verify — Flight controller and RC: GPS / Home Position
+- Complete/verify — Flight controller and RC: Arming and GUIDED
+
+SAFETY NOTE
+----------------------------------------------------------------------------
+This report is one engineering input only. It does not replace normal
+preflight inspection, legal compliance, pilot supervision or a clear test area.
+============================================================================

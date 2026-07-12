@@ -1,0 +1,223 @@
+{
+  "generated_at": "2026-07-12T21:56:16",
+  "project_version": "V17",
+  "profile": "prop-less",
+  "sections": [
+    {
+      "name": "Software integration",
+      "status": "WARNING",
+      "score": 88.33333333333333,
+      "checks": [
+        {
+          "name": "Project version",
+          "status": "WARNING",
+          "value": "V17",
+          "details": "V18 is the readiness-report release.",
+          "score": 65.0
+        },
+        {
+          "name": "Required source files",
+          "status": "PASS",
+          "value": "6/6",
+          "details": "All required integration files exist.",
+          "score": 100.0
+        },
+        {
+          "name": "Python syntax",
+          "status": "PASS",
+          "value": "all files compile",
+          "details": "",
+          "score": 100.0
+        }
+      ]
+    },
+    {
+      "name": "Height calibration",
+      "status": "PASS",
+      "score": 100.0,
+      "checks": [
+        {
+          "name": "Calibration height points",
+          "status": "PASS",
+          "value": "8/8",
+          "details": "All expected heights exist.",
+          "score": 100.0
+        },
+        {
+          "name": "Monotonic marker size",
+          "status": "PASS",
+          "value": "decreases with height",
+          "details": "Marker size decreases at every higher point.",
+          "score": 100.0
+        },
+        {
+          "name": "Marker geometry consistency",
+          "status": "PASS",
+          "value": "max side ratio=1.148",
+          "details": "Near 1.0 indicates a square marker.",
+          "score": 100.0
+        },
+        {
+          "name": "Calibration confidence",
+          "status": "PASS",
+          "value": "92.5%",
+          "details": "Target is at least 90.0%.",
+          "score": 100.0
+        }
+      ]
+    },
+    {
+      "name": "Landing controller",
+      "status": "PASS",
+      "score": 100.0,
+      "checks": [
+        {
+          "name": "Marker detection rate",
+          "status": "PASS",
+          "value": "95.5%",
+          "details": "85 detections out of 89 updates.",
+          "score": 100.0
+        },
+        {
+          "name": "Landing reference",
+          "status": "PASS",
+          "value": "original",
+          "details": "Landing control should accept only original.",
+          "score": 100.0
+        },
+        {
+          "name": "Marker confidence",
+          "status": "PASS",
+          "value": "93.2%",
+          "details": "Target is at least 90.0%.",
+          "score": 100.0
+        },
+        {
+          "name": "Controller state progression",
+          "status": "PASS",
+          "value": "ACQUIRING, ALIGNING, SEARCHING",
+          "details": "Expected ALIGNING, DESCENDING or HOLD_MIN_ALT.",
+          "score": 100.0
+        },
+        {
+          "name": "Velocity calculation",
+          "status": "PASS",
+          "value": "85 valid rows",
+          "details": "At least one non-zero command should be calculated.",
+          "score": 100.0
+        },
+        {
+          "name": "Dry-run protection",
+          "status": "PASS",
+          "value": "commands blocked",
+          "details": "commands disabled; no prior marker lock",
+          "score": 100.0
+        },
+        {
+          "name": "Visual altitude",
+          "status": "PASS",
+          "value": "2.000m avg",
+          "details": "Visual altitude must be available.",
+          "score": 100.0
+        }
+      ]
+    },
+    {
+      "name": "Visual height validation",
+      "status": "WARNING",
+      "score": 76.66666666666667,
+      "checks": [
+        {
+          "name": "Mean visual-height error",
+          "status": "WARNING",
+          "value": "0.108m",
+          "details": "Limit: 0.080m.",
+          "score": 65.0
+        },
+        {
+          "name": "Maximum visual-height error",
+          "status": "WARNING",
+          "value": "0.202m",
+          "details": "Limit: 0.150m.",
+          "score": 65.0
+        },
+        {
+          "name": "Validated heights",
+          "status": "PASS",
+          "value": "4",
+          "details": "0.50m->0.702m (err 0.202m); 1.00m->1.148m (err 0.148m); 1.50m->1.582m (err 0.082m); 2.00m->2.000m (err 0.000m)",
+          "score": 100.0
+        }
+      ]
+    },
+    {
+      "name": "Horizontal direction test",
+      "status": "WARNING",
+      "score": 0.0,
+      "checks": [
+        {
+          "name": "X/Y direction confirmation",
+          "status": "NOT_TESTED",
+          "value": "manual confirmation missing",
+          "details": "Create JSON: {\"x_correct\": true, \"y_correct\": true}.",
+          "score": 40.0
+        }
+      ]
+    },
+    {
+      "name": "Flight controller and RC",
+      "status": "WARNING",
+      "score": 65.0,
+      "checks": [
+        {
+          "name": "Pixhawk MAVLink",
+          "status": "WARNING",
+          "value": "verify from latest health run",
+          "details": "V18 does not duplicate the live MAVLink health monitor.",
+          "score": 65.0
+        },
+        {
+          "name": "RC / ELRS",
+          "status": "NOT_TESTED",
+          "value": "pending transmitter test",
+          "details": "Required before first flight.",
+          "score": 40.0
+        },
+        {
+          "name": "GPS / Home Position",
+          "status": "NOT_TESTED",
+          "value": "outdoor test pending",
+          "details": "Expected to remain unavailable indoors.",
+          "score": 40.0
+        },
+        {
+          "name": "Arming and GUIDED",
+          "status": "NOT_TESTED",
+          "value": "prop-less bench test pending",
+          "details": "Do not test with propellers installed until prior checks pass.",
+          "score": 40.0
+        }
+      ]
+    }
+  ],
+  "overall_score": 71.66666666666667,
+  "overall_status": "WARNING",
+  "readiness_level": "READY FOR PROP-LESS TEST",
+  "actions_required": [
+    "Complete/verify — Software integration: Project version",
+    "Complete/verify — Visual height validation: Mean visual-height error",
+    "Complete/verify — Visual height validation: Maximum visual-height error",
+    "Complete/verify — Horizontal direction test: X/Y direction confirmation",
+    "Complete/verify — Flight controller and RC: Pixhawk MAVLink",
+    "Complete/verify — Flight controller and RC: RC / ELRS",
+    "Complete/verify — Flight controller and RC: GPS / Home Position",
+    "Complete/verify — Flight controller and RC: Arming and GUIDED"
+  ],
+  "source_files": {
+    "calibration": "reports/height_calibration_clean.csv",
+    "summary_calibration": "reports/height_calibration_summary.csv",
+    "landing_log": "logs/landing_debug_20260712_212627.csv",
+    "height_test_glob": "logs/height_test_*m.csv",
+    "direction_results": ""
+  }
+}
