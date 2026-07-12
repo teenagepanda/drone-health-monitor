@@ -64,6 +64,7 @@ class CameraCapture:
         if self.active_backend == "picamera2" and self._picam2 is not None:
             try:
                 frame_rgb = self._picam2.capture_array()
+                frame_rgb = cv2.rotate(frame_rgb, cv2.ROTATE_90_CLOCKWISE)
                 if frame_rgb is None:
                     return CameraFrame(False, message="Picamera2 returned empty frame")
                 frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
