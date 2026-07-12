@@ -75,3 +75,39 @@ python3 src/v14_main.py \
 
 V14 calculates and logs proposed centering velocities only. It does not transmit movement commands to the flight controller.
 Verify direction signs without propellers before adding real movement transmission.
+
+
+## Raspberry Pi CSI camera
+
+V14 now uses Picamera2 by default.
+
+Install the package:
+
+```bash
+sudo apt update
+sudo apt install -y python3-picamera2
+```
+
+Test the camera:
+
+```bash
+rpicam-hello --timeout 5000
+```
+
+Run V14 with the CSI camera:
+
+```bash
+python3 src/v14_main.py \
+  --camera-backend picamera2 \
+  --calibration-summary reports/height_calibration_summary.csv \
+  --marker-size 0.20 \
+  --marker-id 0 \
+  --manual-height 0.25 \
+  --show
+```
+
+For a USB camera, use:
+
+```bash
+--camera-backend opencv --camera-index 0
+```

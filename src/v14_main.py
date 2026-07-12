@@ -5,12 +5,77 @@ import csv
 import logging
 import time
 from pathlib import Path
+from typing import Protocol
 
 import cv2
 import numpy as np
 
 from height_source import HeightProvider
 from summary_calibration import SummaryCalibrationTable
+
+
+class CameraBackend(Protocol):
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+class Picamera2Backend:
+    def __init__(self, width: int, height: int) -> None:
+        try:
+            from picamera2 import Picamera2
+        except ImportError as exc:
+            raise RuntimeError(
+                "Picamera2 is not installed. Install it with: "
+                "sudo apt install -y python3-picamera2"
+            ) from exc
+
+        self.camera = Picamera2()
+        configuration = self.camera.create_video_configuration(
+            main={"size": (width, height), "format": "RGB888"},
+            controls={"FrameRate": 30},
+            buffer_count=4,
+        )
+        self.camera.configure(configuration)
+        self.camera.start()
+        time.sleep(1.0)
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        try:
+            frame_rgb = self.camera.capture_array()
+            if frame_rgb is None:
+                return False, None
+
+            # Picamera2 RGB888 -> OpenCV BGR
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            return True, frame_bgr
+        except Exception as exc:
+            logging.warning("Picamera2 frame capture failed: %s", exc)
+            return False, None
+
+    def close(self) -> None:
+        try:
+            self.camera.stop()
+        finally:
+            self.camera.close()
+
+
+class OpenCVBackend:
+    def __init__(self, index: int, width: int, height: int) -> None:
+        self.camera = cv2.VideoCapture(index)
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if not self.camera.isOpened():
+            raise RuntimeError(f"Could not open OpenCV camera index {index}.")
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        success, frame = self.camera.read()
+        return bool(success), frame if success else None
+
+    def close(self) -> None:
+        self.camera.release()
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--marker-id", type=int, default=0)
     parser.add_argument("--connection")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--camera-backend",
+        choices=["picamera2", "opencv", "auto"],
+        default="picamera2",
+        help="Use picamera2 for Raspberry Pi CSI cameras.",
+    )
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
@@ -55,6 +126,25 @@ def connect_vehicle(connection: str | None, baud: int):
         vehicle.target_component,
     )
     return vehicle
+
+
+def create_camera(args: argparse.Namespace) -> CameraBackend:
+    if args.camera_backend == "picamera2":
+        logging.info("Opening Raspberry Pi CSI camera with Picamera2.")
+        return Picamera2Backend(args.width, args.height)
+
+    if args.camera_backend == "opencv":
+        logging.info("Opening camera index %d with OpenCV.", args.camera_index)
+        return OpenCVBackend(args.camera_index, args.width, args.height)
+
+    # auto: prefer Picamera2, then fall back to OpenCV
+    try:
+        logging.info("Trying Picamera2 camera backend.")
+        return Picamera2Backend(args.width, args.height)
+    except Exception as exc:
+        logging.warning("Picamera2 unavailable: %s", exc)
+        logging.info("Falling back to OpenCV camera index %d.", args.camera_index)
+        return OpenCVBackend(args.camera_index, args.width, args.height)
 
 
 def marker_center(corners: np.ndarray) -> tuple[float, float]:
@@ -158,17 +248,14 @@ def main() -> int:
         aruco_parameters,
     )
 
-    camera = cv2.VideoCapture(args.camera_index)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-
-    if not camera.isOpened():
-        raise RuntimeError("Could not open the camera.")
+    camera = create_camera(args)
 
     log_path = Path(args.log_file)
     ensure_log(log_path)
 
     stable_frames = 0
+    consecutive_read_failures = 0
+
     logging.info(
         "V14 started. Movement transmission remains disabled. "
         "Press q in the camera window or Ctrl+C to stop."
@@ -177,10 +264,17 @@ def main() -> int:
     try:
         while True:
             success, frame = camera.read()
-            if not success:
-                logging.warning("Camera frame read failed.")
+            if not success or frame is None:
+                consecutive_read_failures += 1
+                if consecutive_read_failures == 1 or consecutive_read_failures % 20 == 0:
+                    logging.warning(
+                        "Camera frame read failed (%d consecutive failures).",
+                        consecutive_read_failures,
+                    )
                 time.sleep(0.05)
                 continue
+
+            consecutive_read_failures = 0
 
             corners, ids, _ = detector.detectMarkers(frame)
             selected_index = None
@@ -312,7 +406,7 @@ def main() -> int:
     except KeyboardInterrupt:
         logging.info("Stopped by user.")
     finally:
-        camera.release()
+        camera.close()
         cv2.destroyAllWindows()
         if vehicle is not None:
             vehicle.close()
