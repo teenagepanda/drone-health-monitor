@@ -1,6 +1,5 @@
+.venv/
 __pycache__/
 *.pyc
-logs/*.csv
-reports/*.html
 .env
-.venv/
+logs/*.csv

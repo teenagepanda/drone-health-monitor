@@ -1,36 +1,83 @@
-# Drone Health Monitor v11 – Template Marker + Visual Landing Controller
+# Drone Health Monitor V14
 
-This update keeps the old template/reference marker as the default until the ArUco marker is printed.
+V14 adds CSV-based camera/marker calibration to the ArUco detection loop.
 
-## What changed
+## Main behavior
 
-- `run_marker_test.py` default marker type changed back to `template`.
-- `run_health_test.py` default marker type changed back to `template`.
-- Added `src/landing_controller.py`.
-- Added optional visual landing controller flags to the full health test.
+1. Loads empirical calibration measurements from `data/camera_height_calibration.csv`.
+2. Interpolates calibration values between measured heights.
+3. Converts marker pixel offset into metric X/Y offset.
+4. Keeps autonomous movement disabled by default.
+5. Logs detections and the calibration row used.
+6. Optionally loads camera intrinsics from `data/camera_intrinsics.csv`.
 
-## Safety behavior
+## Expected empirical CSV
 
-Autonomous landing is disabled by default. When `--autoland-on-marker` is used without `--enable-autolanding`, the controller runs in dry-run mode and only prints the MAVLink velocity commands it would send.
+Required columns:
 
-The script does not arm the drone and does not take off. Test first in SITL or with propellers removed.
-
-## Marker test with old image
-
-```bash
-python src/run_marker_test.py --camera-backend picamera2 --marker-type template --reference markers/reference_marker.png --duration 60 --show --send-email
+```csv
+height_m,px_per_meter_x,px_per_meter_y
+0.25,1450,1430
+0.50,725,715
+...
 ```
 
-## Full test with old image and dry-run landing controller
+Optional columns:
 
-```bash
-python src/main.py --connection /dev/ttyACM0 --baud 115200 --duration 180 --detect-marker --camera-backend picamera2 --marker-type template --marker-reference markers/reference_marker.png --autoland-on-marker --send-email
+- `center_x_px`
+- `center_y_px`
+- `notes`
+
+The values in the included CSV are placeholders. Replace them with the values obtained from your tests.
+
+## Optional intrinsic CSV
+
+```csv
+fx,fy,cx,cy,k1,k2,p1,p2,k3
+...
 ```
 
-## Real command mode, only after safe tests
+## Install
 
 ```bash
-python src/main.py --connection /dev/ttyACM0 --baud 115200 --duration 180 --detect-marker --camera-backend picamera2 --marker-type template --marker-reference markers/reference_marker.png --autoland-on-marker --enable-autolanding
+cd ~/drone_health_monitor_V14
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Recommended first real tests: very low altitude, open area, kill switch ready, and GUIDED mode verified.
+## Camera-only test
+
+```bash
+python3 src/main.py \
+  --calibration data/camera_height_calibration.csv \
+  --intrinsics data/camera_intrinsics.csv \
+  --marker-size 0.20 \
+  --marker-id 0 \
+  --show
+```
+
+Press `q` to stop.
+
+## MAVLink-connected test
+
+```bash
+python3 src/main.py \
+  --connection /dev/ttyACM0 \
+  --baud 115200 \
+  --calibration data/camera_height_calibration.csv \
+  --marker-size 0.20 \
+  --marker-id 0 \
+  --show
+```
+
+V14 does not send movement commands unless `--enable-control` is explicitly supplied.
+Even with that flag, the included controller is limited to generating/logging a proposed velocity command.
+It does not transmit the command to the flight controller.
+
+## Safety
+
+- First run without propellers.
+- Verify the displayed direction signs by moving the marker manually.
+- Confirm the measured height source.
+- Do not enable automatic landing until all calibration rows are validated.
