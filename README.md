@@ -1,83 +1,77 @@
-# Drone Health Monitor V14
+# Drone Health Monitor V14 — direct summary CSV calibration
 
-V14 adds CSV-based camera/marker calibration to the ArUco detection loop.
+This revision loads calibration directly from:
 
-## Main behavior
-
-1. Loads empirical calibration measurements from `data/camera_height_calibration.csv`.
-2. Interpolates calibration values between measured heights.
-3. Converts marker pixel offset into metric X/Y offset.
-4. Keeps autonomous movement disabled by default.
-5. Logs detections and the calibration row used.
-6. Optionally loads camera intrinsics from `data/camera_intrinsics.csv`.
-
-## Expected empirical CSV
-
-Required columns:
-
-```csv
-height_m,px_per_meter_x,px_per_meter_y
-0.25,1450,1430
-0.50,725,715
-...
+```text
+reports/height_calibration_summary.csv
 ```
 
-Optional columns:
+No separate `camera_height_calibration.csv` is needed.
 
-- `center_x_px`
-- `center_y_px`
-- `notes`
+## Calibration behavior
 
-The values in the included CSV are placeholders. Replace them with the values obtained from your tests.
+- Only rows with `test_type=center` are used.
+- `real_height_m` is used as the measured height.
+- `avg_marker_width_px` and `avg_marker_height_px` are converted to pixels-per-meter using the real printed marker size.
+- If a height appears more than once, the newest row by `timestamp` is used.
+- Heights between measured points use linear interpolation.
+- Heights outside the measured range are clamped to the closest measured height.
+- Calibration is loaded once when V14 starts.
 
-## Optional intrinsic CSV
+## Required CSV columns
 
-```csv
-fx,fy,cx,cy,k1,k2,p1,p2,k3
-...
+```text
+timestamp
+real_height_m
+test_type
+avg_marker_width_px
+avg_marker_height_px
 ```
 
-## Install
+## Install/update
+
+Copy the contents into the repository, then:
 
 ```bash
-cd ~/drone_health_monitor_V14
-python3 -m venv .venv
-source .venv/bin/activate
+cd ~/drone-health-monitor
+source venv/bin/activate
 pip install -r requirements.txt
+```
+
+## Validate the saved calibration
+
+For a 20 cm marker:
+
+```bash
+python3 src/validate_summary_calibration.py \
+  reports/height_calibration_summary.csv \
+  --marker-size 0.20
 ```
 
 ## Camera-only test
 
 ```bash
-python3 src/main.py \
-  --calibration data/camera_height_calibration.csv \
-  --intrinsics data/camera_intrinsics.csv \
+python3 src/v14_main.py \
+  --calibration-summary reports/height_calibration_summary.csv \
   --marker-size 0.20 \
   --marker-id 0 \
+  --manual-height 0.25 \
   --show
 ```
 
-Press `q` to stop.
-
-## MAVLink-connected test
+## Test with Pixhawk height
 
 ```bash
-python3 src/main.py \
+python3 src/v14_main.py \
   --connection /dev/ttyACM0 \
   --baud 115200 \
-  --calibration data/camera_height_calibration.csv \
+  --calibration-summary reports/height_calibration_summary.csv \
   --marker-size 0.20 \
   --marker-id 0 \
   --show
 ```
-
-V14 does not send movement commands unless `--enable-control` is explicitly supplied.
-Even with that flag, the included controller is limited to generating/logging a proposed velocity command.
-It does not transmit the command to the flight controller.
 
 ## Safety
 
-- First run without propellers.
-- Verify the displayed direction signs by moving the marker manually.
-- Confirm the measured height source.
-- Do not enable automatic landing until all calibration rows are validated.
+V14 calculates and logs proposed centering velocities only. It does not transmit movement commands to the flight controller.
+Verify direction signs without propellers before adding real movement transmission.

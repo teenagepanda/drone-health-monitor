@@ -1,0 +1,13 @@
+{
+  "calibration_summary": "reports/height_calibration_summary.csv",
+  "marker_size_m": 0.2,
+  "marker_id": 0,
+  "camera_index": 0,
+  "frame_width": 1280,
+  "frame_height": 720,
+  "stable_frames_required": 8,
+  "deadband_m": 0.03,
+  "max_velocity_m_s": 0.2,
+  "proportional_gain": 0.45,
+  "control_transmission_enabled": false
+}
