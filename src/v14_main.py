@@ -50,6 +50,7 @@ class Picamera2Backend:
 
             # Picamera2 RGB888 -> OpenCV BGR
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            frame_bgr = cv2.rotate(frame_bgr, cv2.ROTATE_90_CLOCKWISE)
             return True, frame_bgr
         except Exception as exc:
             logging.warning("Picamera2 frame capture failed: %s", exc)

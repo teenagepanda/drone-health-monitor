@@ -32,6 +32,43 @@ def _marker_geometry(corners, frame_shape):
     }
 
 
+
+def _resolve_calibration_reference(source: str | Path, reference_name: str) -> Path:
+    """Return the single reference image used for height calibration.
+
+    Height calibration must not mix detections from fallback references such as
+    A, B, C, D or E. If *source* is a directory, locate exactly one image whose
+    filename stem matches *reference_name* (case-insensitive).
+    """
+    source_path = Path(source)
+    if source_path.is_file():
+        if source_path.stem.lower() != reference_name.lower():
+            raise ValueError(
+                f"Calibration reference must be '{reference_name}', got: {source_path.name}"
+            )
+        return source_path
+
+    if not source_path.is_dir():
+        raise FileNotFoundError(f"Reference path not found: {source_path}")
+
+    allowed = {".png", ".jpg", ".jpeg", ".bmp"}
+    matches = [
+        path for path in source_path.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in allowed
+        and path.stem.lower() == reference_name.lower()
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"Calibration reference '{reference_name}' was not found in: {source_path}"
+        )
+    if len(matches) > 1:
+        names = ", ".join(sorted(path.name for path in matches))
+        raise ValueError(
+            f"Multiple calibration references named '{reference_name}' found: {names}"
+        )
+    return matches[0]
+
 def _append_calibration_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
@@ -71,6 +108,39 @@ def _append_summary_csv(path: Path, row: dict) -> None:
             writer.writeheader()
         writer.writerow(row)
 
+
+
+def _read_center_summary_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        return [
+            row for row in reader
+            if row.get("test_type", "").strip().lower() == "center"
+        ]
+
+
+def _validate_monotonic_center_calibration(path: Path) -> list[str]:
+    rows = _read_center_summary_rows(path)
+    points = []
+    for row in rows:
+        try:
+            height = float(row["real_height_m"])
+            width = float(row["avg_marker_width_px"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        points.append((height, width))
+
+    points.sort(key=lambda item: item[0])
+    problems = []
+    for (h1, w1), (h2, w2) in zip(points, points[1:]):
+        if h2 > h1 and w2 >= w1:
+            problems.append(
+                f"Non-monotonic calibration: {h1:.2f} m -> {w1:.1f} px, "
+                f"but {h2:.2f} m -> {w2:.1f} px"
+            )
+    return problems
 
 def main():
     parser = argparse.ArgumentParser(description="Run camera test for visual-marker detection")
@@ -143,6 +213,23 @@ def main():
         default=0.20,
         help="Minimum seconds between recorded calibration samples",
     )
+    parser.add_argument(
+        "--calibration-reference-name",
+        default="original",
+        help="Reference filename stem accepted during height calibration. Default: original",
+    )
+    parser.add_argument(
+        "--calibration-min-confidence",
+        type=float,
+        default=90.0,
+        help="Minimum confidence percentage required for an accepted calibration sample. Default: 90",
+    )
+    parser.add_argument(
+        "--calibration-max-width-cv",
+        type=float,
+        default=5.0,
+        help="Maximum allowed width coefficient of variation in percent before warning. Default: 5",
+    )
     args = parser.parse_args()
 
     if args.calibrate_height:
@@ -154,6 +241,10 @@ def main():
             parser.error("--calibration-samples must be greater than zero")
         if args.calibration_interval < 0:
             parser.error("--calibration-interval cannot be negative")
+        if not 0.0 <= args.calibration_min_confidence <= 100.0:
+            parser.error("--calibration-min-confidence must be between 0 and 100")
+        if args.calibration_max_width_cv < 0:
+            parser.error("--calibration-max-width-cv cannot be negative")
 
         expected_offsets = {
             "center": (0.0, 0.0),
@@ -166,6 +257,15 @@ def main():
         if args.test_type in expected_offsets and args.offset_x == 0.0 and args.offset_y == 0.0:
             args.offset_x, args.offset_y = expected_offsets[args.test_type]
 
+    detector_reference = args.reference
+    if args.calibrate_height:
+        detector_reference = str(
+            _resolve_calibration_reference(
+                args.reference,
+                args.calibration_reference_name,
+            )
+        )
+
     if args.marker_type == "aruco":
         from aruco_marker_detector import ArucoMarkerDetector, draw_aruco_detection
 
@@ -175,9 +275,9 @@ def main():
     else:
         from visual_marker_detector import VisualMarkerDetector, draw_detection
 
-        detector = VisualMarkerDetector(args.reference, threshold=args.threshold)
+        detector = VisualMarkerDetector(detector_reference, threshold=args.threshold)
         base_draw = draw_detection
-        detector_description = f"Multi-reference template: {', '.join(detector.reference_names)}"
+        detector_description = f"Template reference: {', '.join(detector.reference_names)}"
 
     cap = CameraCapture(camera_index=args.camera_index, backend=args.camera_backend)
     cap.open()
@@ -189,7 +289,12 @@ def main():
         print(
             f"HEIGHT CALIBRATION MODE | real height={args.real_height:.3f} m | "
             f"series={args.test_type} | planned offset=({args.offset_x:+.1f}, {args.offset_y:+.1f}) cm | "
-            f"target samples={args.calibration_samples} | raw output={args.calibration_output}"
+            f"target samples={args.calibration_samples} | raw output={args.calibration_output} | "
+            f"minimum confidence={args.calibration_min_confidence:.1f}%"
+        )
+        print(
+            f"Calibration reference lock: '{args.calibration_reference_name}' only | "
+            f"file={detector_reference}"
         )
 
     start = time.time()
@@ -203,6 +308,9 @@ def main():
     fps_window_start = time.perf_counter()
     calibration_rows: list[dict] = []
     last_calibration_record = 0.0
+    rejected_reference_count = 0
+    rejected_confidence_count = 0
+    last_rejection_print = 0.0
 
     try:
         while time.time() - start < args.duration:
@@ -239,6 +347,31 @@ def main():
                     print(f"Marker not detected | {detection.message} | elapsed={elapsed:.2f}s | FPS={fps:.1f}")
 
             if args.calibrate_height and detection.detected and detection.corners is not None:
+                detected_reference = (getattr(detection, "reference_name", None) or "").lower()
+                required_reference = args.calibration_reference_name.lower()
+                confidence_percent = detection.score * 100.0
+
+                if detected_reference != required_reference:
+                    rejected_reference_count += 1
+                    if now - last_rejection_print >= 1.0:
+                        last_rejection_print = now
+                        print(
+                            f"CALIBRATION SAMPLE REJECTED | reason=reference | "
+                            f"detected={detected_reference or 'none'} | required={required_reference}"
+                        )
+                    continue
+
+                if confidence_percent < args.calibration_min_confidence:
+                    rejected_confidence_count += 1
+                    if now - last_rejection_print >= 1.0:
+                        last_rejection_print = now
+                        print(
+                            f"CALIBRATION SAMPLE REJECTED | reason=confidence | "
+                            f"confidence={confidence_percent:.1f}% | "
+                            f"required>={args.calibration_min_confidence:.1f}%"
+                        )
+                    continue
+
                 if now - last_calibration_record >= args.calibration_interval:
                     geometry = _marker_geometry(detection.corners, frame.shape)
                     row = {
@@ -248,7 +381,7 @@ def main():
                         "planned_offset_x_cm": args.offset_x,
                         "planned_offset_y_cm": args.offset_y,
                         "reference": getattr(detection, "reference_name", None) or "N/A",
-                        "confidence_percent": detection.score * 100.0,
+                        "confidence_percent": confidence_percent,
                         **geometry,
                         "processing_time_ms": getattr(detection, "processing_time_s", 0.0) * 1000.0,
                         "fps": fps,
@@ -256,14 +389,26 @@ def main():
                     }
                     calibration_rows.append(row)
                     last_calibration_record = now
+
+                    accepted_widths = [item["marker_width_px"] for item in calibration_rows]
+                    running_mean_width = statistics.mean(accepted_widths)
+                    running_stdev_width = statistics.stdev(accepted_widths) if len(accepted_widths) > 1 else 0.0
+                    running_width_cv = (running_stdev_width / running_mean_width * 100.0) if running_mean_width > 0 else 0.0
+
                     print(
                         f"CALIBRATION {len(calibration_rows)}/{args.calibration_samples} | "
                         f"height={args.real_height:.2f}m | series={args.test_type} | "
                         f"planned offset=({args.offset_x:+.1f},{args.offset_y:+.1f})cm | "
                         f"width={geometry['marker_width_px']:.1f}px | "
                         f"height_px={geometry['marker_height_px']:.1f}px | "
-                        f"area={geometry['marker_area_px2']:.0f}px^2 | confidence={detection.score * 100:.1f}%"
+                        f"area={geometry['marker_area_px2']:.0f}px^2 | confidence={confidence_percent:.1f}% | "
+                        f"running_avg_width={running_mean_width:.1f}px | width_CV={running_width_cv:.2f}%"
                     )
+                    if len(calibration_rows) >= 5 and running_width_cv > args.calibration_max_width_cv:
+                        print(
+                            f"WARNING: calibration width is unstable | CV={running_width_cv:.2f}% | "
+                            f"limit={args.calibration_max_width_cv:.2f}% | hold camera and marker steady"
+                        )
                     if len(calibration_rows) >= args.calibration_samples:
                         print("Calibration sample target reached.")
                         break
@@ -348,6 +493,12 @@ def main():
             }
             summary_path = Path(args.calibration_summary_output)
             _append_summary_csv(summary_path, summary_row)
+
+            mean_width = statistics.mean(widths)
+            stdev_width = sample_stdev(widths)
+            width_cv = (stdev_width / mean_width * 100.0) if mean_width > 0 else 0.0
+            quality_status = "PASS" if width_cv <= args.calibration_max_width_cv else "WARNING"
+
             print(
                 f"CALIBRATION SUMMARY | samples={len(calibration_rows)} | real height={args.real_height:.3f}m | "
                 f"series={args.test_type} | offset=({args.offset_x:+.1f},{args.offset_y:+.1f})cm | "
@@ -355,8 +506,23 @@ def main():
                 f"avg height={statistics.mean(heights):.1f}px | avg area={statistics.mean(areas):.0f}px^2 | "
                 f"avg confidence={statistics.mean(confidences):.1f}% | avg FPS={statistics.mean(fps_values):.1f}"
             )
+            print(
+                f"CALIBRATION QUALITY {quality_status} | accepted={len(calibration_rows)} | "
+                f"rejected_reference={rejected_reference_count} | "
+                f"rejected_confidence={rejected_confidence_count} | "
+                f"width_CV={width_cv:.2f}% | limit={args.calibration_max_width_cv:.2f}%"
+            )
             print(f"Raw calibration data appended to: {output_path}")
             print(f"Run summary appended to: {summary_path}")
+
+            monotonic_problems = _validate_monotonic_center_calibration(summary_path)
+            if monotonic_problems:
+                print("CALIBRATION CONSISTENCY ERROR:")
+                for problem in monotonic_problems:
+                    print(f" - {problem}")
+                print("Repeat the listed height measurement(s) before using this calibration for landing.")
+            else:
+                print("Calibration consistency check: PASS (marker width decreases with height).")
         else:
             print("CALIBRATION SUMMARY | no valid detections recorded; CSV was not changed.")
 
