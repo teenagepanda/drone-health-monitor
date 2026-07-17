@@ -340,6 +340,26 @@ def main():
     parser.add_argument("--connection", default="/dev/ttyACM0", help="MAVLink connection used for telemetry or landing control")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--enable-landing-commands", action="store_true", help="DANGER: send real GUIDED/LAND commands; default is dry-run")
+    parser.add_argument(
+        "--hover-test",
+        action="store_true",
+        help=(
+            "Limited horizontal alignment test: real GUIDED XY commands are allowed, "
+            "but vertical descent and final LAND are forcibly disabled"
+        ),
+    )
+    parser.add_argument(
+        "--max-xy-speed",
+        type=float,
+        default=0.10,
+        help="Maximum horizontal correction speed in m/s. Default: 0.10",
+    )
+    parser.add_argument(
+        "--descent-speed",
+        type=float,
+        default=0.20,
+        help="Vertical descent speed in m/s outside hover-test mode. Default: 0.20",
+    )
     parser.add_argument("--final-land", action="store_true", help="Allow MAV_CMD_NAV_LAND after minimum altitude")
     parser.add_argument("--landing-calibration", default="reports/height_calibration_clean.csv")
     parser.add_argument("--landing-log", default="reports/landing_runs/landing_log.csv")
@@ -404,6 +424,14 @@ def main():
         parser.error("--connect-flight-controller requires --landing-controller")
     if args.enable_landing_commands and not args.landing_controller:
         parser.error("--enable-landing-commands requires --landing-controller")
+    if args.hover_test and not args.enable_landing_commands:
+        parser.error("--hover-test requires --enable-landing-commands")
+    if args.hover_test and args.final_land:
+        parser.error("--hover-test cannot be combined with --final-land")
+    if args.max_xy_speed <= 0 or args.max_xy_speed > 0.25:
+        parser.error("--max-xy-speed must be greater than 0 and no more than 0.25 m/s")
+    if args.descent_speed <= 0 or args.descent_speed > 0.30:
+        parser.error("--descent-speed must be greater than 0 and no more than 0.30 m/s")
     if args.final_land and not args.enable_landing_commands:
         parser.error("--final-land requires --enable-landing-commands")
     if args.landing_controller:
@@ -433,7 +461,9 @@ def main():
             required_reference="original",
             stable_frames_required=5,
             min_landing_alt_m=0.30,
-            descent_speed_mps=0.20,
+            max_xy_speed_mps=args.max_xy_speed,
+            descent_speed_mps=args.descent_speed,
+            allow_descent=not args.hover_test,
             altitude_source=args.landing_altitude_source,
             final_land=args.final_land,
             save_marker_images=True,
@@ -444,7 +474,12 @@ def main():
         )
         Path(args.marker_image_dir).mkdir(parents=True, exist_ok=True)
         Path(args.landing_log).parent.mkdir(parents=True, exist_ok=True)
-        if args.enable_landing_commands:
+        if args.hover_test:
+            mode = (
+                f"HOVER TEST (XY only, max={args.max_xy_speed:.2f} m/s; "
+                "descent and LAND disabled)"
+            )
+        elif args.enable_landing_commands:
             mode = "REAL COMMANDS"
         elif args.connect_flight_controller:
             mode = "TELEMETRY ONLY (commands disabled)"

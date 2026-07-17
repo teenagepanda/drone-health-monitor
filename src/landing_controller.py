@@ -68,6 +68,7 @@ class VisualLandingController:
         use_calibration: bool = True,
         max_xy_speed_mps: float = 0.25,
         descent_speed_mps: float = 0.20,
+        allow_descent: bool = True,
         center_tolerance_px: int = 70,
         center_tolerance_m: float = 0.08,
         min_landing_alt_m: float = 0.30,
@@ -94,6 +95,7 @@ class VisualLandingController:
         self.marker_size_m = float(marker_size_m)
         self.max_xy_speed_mps = float(max_xy_speed_mps)
         self.descent_speed_mps = float(descent_speed_mps)
+        self.allow_descent = bool(allow_descent)
         self.center_tolerance_px = int(center_tolerance_px)
         self.center_tolerance_m = float(center_tolerance_m)
         self.min_landing_alt_m = float(min_landing_alt_m)
@@ -285,10 +287,18 @@ class VisualLandingController:
         if stable and not centered:
             state = "ALIGNING"
         elif stable and centered:
-            state = "DESCENDING"
-            vz = self.descent_speed_mps
+            if self.allow_descent:
+                state = "DESCENDING"
+                vz = self.descent_speed_mps
+            else:
+                state = "HOVER_HOLD"
+                vz = 0.0
 
-        if control_alt is not None and control_alt <= self.min_landing_alt_m:
+        if (
+            self.allow_descent
+            and control_alt is not None
+            and control_alt <= self.min_landing_alt_m
+        ):
             vx = vy = vz = 0.0
             state = "HOLD_MIN_ALT"
             if centered and stable and self.final_land and not self._land_command_sent:
