@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from pymavlink import mavutil
+
+try:
+    import cv2
+except ImportError:  # Image saving is optional; flight control remains available.
+    cv2 = None
 
 from camera_calibration import CameraCalibration
 
@@ -34,6 +41,7 @@ class LandingCommand:
     command_sent: bool = False
     block_reason: str = ""
     message: str = "Landing controller inactive"
+    saved_image_path: str = ""
 
 
 class VisualLandingController:
@@ -72,6 +80,10 @@ class VisualLandingController:
         stable_frames_required: int = 5,
         marker_lost_timeout_s: float = 0.75,
         altitude_source: str = "visual",
+        save_marker_images: bool = True,
+        marker_image_dir: str = "reports/marker_detections",
+        marker_image_interval_s: float = 5.0,
+        marker_image_max_count: int = 100,
     ):
         self.master = master
         self.enable_commands = bool(enable_commands)
@@ -93,6 +105,10 @@ class VisualLandingController:
         self.stable_frames_required = max(int(stable_frames_required), 1)
         self.marker_lost_timeout_s = max(float(marker_lost_timeout_s), 0.0)
         self.altitude_source = altitude_source.lower()
+        self.save_marker_images = bool(save_marker_images)
+        self.marker_image_dir = Path(marker_image_dir)
+        self.marker_image_interval_s = max(float(marker_image_interval_s), 0.0)
+        self.marker_image_max_count = max(int(marker_image_max_count), 0)
         if self.altitude_source not in {"visual", "telemetry", "auto"}:
             raise ValueError("altitude_source must be visual, telemetry or auto")
 
@@ -118,13 +134,39 @@ class VisualLandingController:
         self._last_seen_time = 0.0
         self._stable_frames = 0
         self._land_command_sent = False
+        self._land_handoff_active = False
+        self._last_marker_image_time = 0.0
+        self._marker_image_count = 0
         self.last_command = LandingCommand(False, False, False)
 
-    def update(self, frame_shape, detection, telemetry) -> LandingCommand:
+    def update(self, frame_shape, detection, telemetry, frame=None) -> LandingCommand:
         now = time.time()
         telemetry_alt = self._positive_float(
             getattr(telemetry, "relative_alt_m", None)
         )
+
+        # Once LAND has been handed over to ArduPilot, do not send any more
+        # velocity commands. ArduPilot must remain in full control of throttle,
+        # touchdown detection and disarming.
+        if self._land_handoff_active:
+            armed = getattr(telemetry, "armed", None)
+            landed = self._telemetry_reports_landed(telemetry)
+            state = "LANDED" if (landed or armed is False) else "LAND_HANDOFF"
+            cmd = LandingCommand(
+                active=False,
+                detected=bool(detection is not None and getattr(detection, "detected", False)),
+                centered=False,
+                state=state,
+                telemetry_alt_m=telemetry_alt,
+                command_sent=False,
+                block_reason="ArduPilot owns landing and throttle control",
+                message=(
+                    f"REAL | state={state} | LAND command already sent; "
+                    "visual velocity commands disabled until touchdown/disarm"
+                ),
+            )
+            self.last_command = cmd
+            return cmd
         confidence = float(getattr(detection, "score", 0.0) or 0.0)
         reference = str(
             getattr(detection, "reference_name", None) or "none"
@@ -220,6 +262,17 @@ class VisualLandingController:
         )
         stable = self._stable_frames >= self.stable_frames_required
 
+        saved_image_path = self._maybe_save_marker_image(
+            frame=frame,
+            detection=detection,
+            confidence=confidence,
+            reference=reference,
+            state=("CENTERED" if centered else "DETECTED"),
+            telemetry_alt=telemetry_alt,
+            visual_alt=visual_alt,
+            now=now,
+        )
+
         vx = self._clamp(
             -err_y_m * self.kp_position,
             -self.max_xy_speed_mps,
@@ -250,6 +303,7 @@ class VisualLandingController:
                 sent, reason = self._send_land_command(telemetry)
                 if sent:
                     self._land_command_sent = True
+                    self._land_handoff_active = True
                     state = "FINAL_LAND"
                 cmd = self._build_command(
                     True, centered, state, confidence, reference, marker_side_px,
@@ -257,6 +311,7 @@ class VisualLandingController:
                     meters_per_pixel, err_x_px, err_y_px, err_x_m, err_y_m,
                     vx, vy, vz, sent, reason,
                 )
+                cmd.saved_image_path = saved_image_path
                 self.last_command = cmd
                 return cmd
 
@@ -274,12 +329,30 @@ class VisualLandingController:
             meters_per_pixel, err_x_px, err_y_px, err_x_m, err_y_m,
             vx, vy, vz, sent, block_reason,
         )
+        cmd.saved_image_path = saved_image_path
         self.last_command = cmd
         return cmd
 
     def stop(self) -> None:
-        if self.enable_commands and self.master is not None:
+        # Never override ArduPilot after LAND handoff. Sending a zero-velocity
+        # command at that point could interfere with the landing controller.
+        if (
+            self.enable_commands
+            and self.master is not None
+            and not self._land_handoff_active
+        ):
             self._send_velocity_command(0.0, 0.0, 0.0, None, force=True)
+
+    def reset_for_new_flight(self) -> None:
+        """Reset controller state only while the vehicle is safely disarmed."""
+        self._last_command_time = 0.0
+        self._last_seen_time = 0.0
+        self._stable_frames = 0
+        self._land_command_sent = False
+        self._land_handoff_active = False
+        self._last_marker_image_time = 0.0
+        self._marker_image_count = 0
+        self.last_command = LandingCommand(False, False, False)
 
     def _build_command(
         self, detected, centered, state, confidence, reference, marker_side_px,
@@ -327,6 +400,61 @@ class VisualLandingController:
             block_reason=block_reason,
             message=msg,
         )
+
+    def _maybe_save_marker_image(
+        self, frame, detection, confidence: float, reference: str, state: str,
+        telemetry_alt: Optional[float], visual_alt: Optional[float], now: float,
+    ) -> str:
+        """Save a rate-limited annotated evidence image for the final report."""
+        if not self.save_marker_images or frame is None or cv2 is None:
+            return ""
+        if self.marker_image_max_count and self._marker_image_count >= self.marker_image_max_count:
+            return ""
+        if now - self._last_marker_image_time < self.marker_image_interval_s:
+            return ""
+
+        try:
+            image = frame.copy()
+            corners = getattr(detection, "corners", None)
+            if corners is not None:
+                pts = corners.reshape(-1, 2).astype("int32")
+                cv2.polylines(image, [pts], True, (0, 255, 0), 2)
+
+            center = self._get_detection_center(detection)
+            if center is not None:
+                cv2.circle(image, center, 6, (0, 0, 255), -1)
+
+            lines = [
+                f"Marker: {reference}",
+                f"Confidence: {confidence * 100:.1f}%",
+                f"State: {state}",
+                f"Visual alt: {self._fmt(visual_alt)} m",
+                f"FC alt: {self._fmt(telemetry_alt)} m",
+            ]
+            y = 28
+            for line in lines:
+                cv2.putText(
+                    image, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65, (255, 255, 255), 2, cv2.LINE_AA,
+                )
+                y += 26
+
+            self.marker_image_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            filename = (
+                f"marker_{timestamp}_{reference}_"
+                f"conf_{confidence * 100:.1f}.jpg"
+            ).replace(" ", "_")
+            path = self.marker_image_dir / filename
+            if not cv2.imwrite(str(path), image):
+                return ""
+
+            self._last_marker_image_time = now
+            self._marker_image_count += 1
+            return str(path)
+        except Exception:
+            # Evidence capture must never interrupt landing control.
+            return ""
 
     def _select_altitude(
         self, telemetry_alt: Optional[float], visual_alt: Optional[float]
@@ -417,6 +545,25 @@ class VisualLandingController:
 
     def _mode_text(self) -> str:
         return "REAL" if self.enable_commands else "DRY-RUN"
+
+
+    @staticmethod
+    def _telemetry_reports_landed(telemetry) -> bool:
+        """Best-effort landed check supporting common telemetry field names."""
+        if telemetry is None:
+            return False
+
+        for name in ("landed", "is_landed", "land_complete"):
+            value = getattr(telemetry, name, None)
+            if value is True:
+                return True
+
+        landed_state = getattr(telemetry, "landed_state", None)
+        if landed_state is not None:
+            text = str(landed_state).upper()
+            if text in {"1", "ON_GROUND", "MAV_LANDED_STATE_ON_GROUND"}:
+                return True
+        return False
 
     @staticmethod
     def _fmt(value: Optional[float]) -> str:

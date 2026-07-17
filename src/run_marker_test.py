@@ -2,6 +2,7 @@ import argparse
 import csv
 import statistics
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import cv2
 
 from camera_capture import CameraCapture
 from email_sender import send_email_report
+from landing_controller import LandingCommand, VisualLandingController
 
 
 def _marker_geometry(corners, frame_shape):
@@ -142,6 +144,77 @@ def _validate_monotonic_center_calibration(path: Path) -> list[str]:
             )
     return problems
 
+
+@dataclass
+class LandingTelemetry:
+    armed: bool | None = None
+    mode: str = "UNKNOWN"
+    relative_alt_m: float | None = None
+    landed_state: str = "UNKNOWN"
+
+
+def _update_landing_telemetry(master, telemetry: LandingTelemetry) -> LandingTelemetry:
+    """Consume available MAVLink messages without blocking the camera loop."""
+    if master is None:
+        return telemetry
+    while True:
+        msg = master.recv_match(blocking=False)
+        if msg is None:
+            break
+        msg_type = msg.get_type()
+        if msg_type == "BAD_DATA":
+            continue
+        if msg_type == "HEARTBEAT":
+            telemetry.armed = bool(msg.base_mode & 128)
+            try:
+                telemetry.mode = str(master.flightmode or "UNKNOWN")
+            except Exception:
+                telemetry.mode = "UNKNOWN"
+        elif msg_type == "GLOBAL_POSITION_INT":
+            telemetry.relative_alt_m = float(msg.relative_alt) / 1000.0
+        elif msg_type == "EXTENDED_SYS_STATE":
+            telemetry.landed_state = str(msg.landed_state)
+    return telemetry
+
+
+def _append_landing_log(path: Path, command: LandingCommand, elapsed: float, telemetry: LandingTelemetry) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+        "elapsed_s": round(elapsed, 3),
+        "state": command.state,
+        "detected": command.detected,
+        "centered": command.centered,
+        "confidence_percent": command.confidence_percent,
+        "reference": command.reference_name,
+        "stable_frames": command.stable_frames,
+        "marker_side_px": command.marker_side_px,
+        "telemetry_alt_m": command.telemetry_alt_m,
+        "visual_alt_m": command.visual_alt_m,
+        "control_alt_m": command.control_alt_m,
+        "altitude_source": command.altitude_source,
+        "error_x_px": command.error_x_px,
+        "error_y_px": command.error_y_px,
+        "error_x_m": command.error_x_m,
+        "error_y_m": command.error_y_m,
+        "vx_mps": command.vx_mps,
+        "vy_mps": command.vy_mps,
+        "vz_mps": command.vz_mps,
+        "command_sent": command.command_sent,
+        "block_reason": command.block_reason,
+        "saved_image_path": command.saved_image_path,
+        "vehicle_armed": telemetry.armed,
+        "vehicle_mode": telemetry.mode,
+        "landed_state": telemetry.landed_state,
+    }
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run camera test for visual-marker detection")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index, usually 0")
@@ -230,6 +303,18 @@ def main():
         default=5.0,
         help="Maximum allowed width coefficient of variation in percent before warning. Default: 5",
     )
+    parser.add_argument("--landing-controller", action="store_true", help="Run visual landing diagnostics and CSV logging")
+    parser.add_argument("--connection", default="/dev/ttyACM0", help="MAVLink connection used with --landing-controller")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--enable-landing-commands", action="store_true", help="DANGER: send real GUIDED/LAND commands; default is dry-run")
+    parser.add_argument("--final-land", action="store_true", help="Allow MAV_CMD_NAV_LAND after minimum altitude")
+    parser.add_argument("--landing-calibration", default="reports/height_calibration_clean.csv")
+    parser.add_argument("--landing-log", default="reports/landing_runs/landing_log.csv")
+    parser.add_argument("--landing-log-interval", type=float, default=0.20)
+    parser.add_argument("--marker-image-dir", default="reports/marker_detections")
+    parser.add_argument("--marker-image-interval", type=float, default=5.0)
+    parser.add_argument("--marker-image-max-count", type=int, default=100)
+    parser.add_argument("--landing-altitude-source", choices=["visual", "telemetry", "auto"], default="visual")
     args = parser.parse_args()
 
     if args.calibrate_height:
@@ -279,6 +364,43 @@ def main():
         base_draw = draw_detection
         detector_description = f"Template reference: {', '.join(detector.reference_names)}"
 
+    master = None
+    landing_controller = None
+    landing_telemetry = LandingTelemetry()
+    if args.enable_landing_commands and not args.landing_controller:
+        parser.error("--enable-landing-commands requires --landing-controller")
+    if args.final_land and not args.landing_controller:
+        parser.error("--final-land requires --landing-controller")
+    if args.landing_controller:
+        from pymavlink import mavutil
+        if args.enable_landing_commands:
+            master = mavutil.mavlink_connection(args.connection, baud=args.baud)
+            print(f"Waiting for MAVLink heartbeat on {args.connection}...")
+            master.wait_heartbeat(timeout=15)
+            print(f"MAVLink connected: system={master.target_system} component={master.target_component}")
+        landing_controller = VisualLandingController(
+            master=master,
+            enable_commands=args.enable_landing_commands,
+            require_guided=True,
+            calibration_csv=args.landing_calibration,
+            min_confidence=max(args.threshold, 0.90),
+            required_reference="original",
+            stable_frames_required=5,
+            min_landing_alt_m=0.30,
+            descent_speed_mps=0.20,
+            altitude_source=args.landing_altitude_source,
+            final_land=args.final_land,
+            save_marker_images=True,
+            marker_image_dir=args.marker_image_dir,
+            marker_image_interval_s=args.marker_image_interval,
+            marker_image_max_count=args.marker_image_max_count,
+            save_state_transition_images=True,
+        )
+        Path(args.marker_image_dir).mkdir(parents=True, exist_ok=True)
+        Path(args.landing_log).parent.mkdir(parents=True, exist_ok=True)
+        mode = "REAL COMMANDS" if args.enable_landing_commands else "DRY-RUN"
+        print(f"Landing controller enabled: {mode} | log={args.landing_log}")
+
     cap = CameraCapture(camera_index=args.camera_index, backend=args.camera_backend)
     cap.open()
     print(f"Camera backend: {cap.active_backend}")
@@ -311,6 +433,8 @@ def main():
     rejected_reference_count = 0
     rejected_confidence_count = 0
     last_rejection_print = 0.0
+    last_landing_log_time = 0.0
+    last_landing_state = ""
 
     try:
         while time.time() - start < args.duration:
@@ -335,6 +459,26 @@ def main():
             if best_detection is None or detection.score > best_detection.score:
                 best_detection = detection
 
+            landing_command = None
+            if landing_controller is not None:
+                landing_telemetry = _update_landing_telemetry(master, landing_telemetry)
+                landing_command = landing_controller.update(
+                    frame.shape, detection, landing_telemetry, frame=frame
+                )
+                if (
+                    now - last_landing_log_time >= args.landing_log_interval
+                    or landing_command.state != last_landing_state
+                ):
+                    _append_landing_log(
+                        Path(args.landing_log), landing_command, elapsed, landing_telemetry
+                    )
+                    last_landing_log_time = now
+                if landing_command.state != last_landing_state:
+                    print(f"LANDING STATE: {last_landing_state or 'NONE'} -> {landing_command.state}")
+                    if landing_command.saved_image_path:
+                        print(f"Landing evidence saved: {landing_command.saved_image_path}")
+                    last_landing_state = landing_command.state
+
             if now - last_print >= 1.0:
                 last_print = now
                 if detection.detected:
@@ -342,6 +486,7 @@ def main():
                         f"Marker detected | reference={getattr(detection, 'reference_name', None) or 'N/A'} | "
                         f"confidence={detection.score * 100:.1f}% | elapsed={elapsed:.2f}s | "
                         f"processing={getattr(detection, 'processing_time_s', 0.0) * 1000:.1f}ms | FPS={fps:.1f}"
+                        + (f" | landing={landing_command.state}" if landing_command else "")
                     )
                 else:
                     print(f"Marker not detected | {detection.message} | elapsed={elapsed:.2f}s | FPS={fps:.1f}")
@@ -452,6 +597,8 @@ def main():
 
             time.sleep(0.02)
     finally:
+        if landing_controller is not None:
+            landing_controller.stop()
         cap.close()
         if args.show:
             cv2.destroyAllWindows()
@@ -527,6 +674,9 @@ def main():
             print("CALIBRATION SUMMARY | no valid detections recorded; CSV was not changed.")
 
     total = time.time() - start
+    if landing_controller is not None:
+        print(f"Landing CSV log: {args.landing_log}")
+        print(f"Landing evidence directory: {args.marker_image_dir}")
     if detected_once:
         print(f"FINAL RESULT: DETECTED | detection time={first_detection_elapsed:.2f}s")
     elif best_detection is not None:
