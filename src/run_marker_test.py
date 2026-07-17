@@ -9,7 +9,6 @@ from pathlib import Path
 import cv2
 
 from camera_capture import CameraCapture
-from email_sender import send_email_report
 from landing_controller import LandingCommand, VisualLandingController
 
 
@@ -575,15 +574,25 @@ def main():
                 print(f"Detected frame saved: {save_path}")
 
                 if args.send_email and not email_sent:
-                    body = (
-                        f"The drone camera detected the visual marker.\n{detection.message}\n"
-                        f"Detection time: {first_detection_elapsed:.2f} seconds\n"
-                        f"Confidence: {detection.score * 100:.1f}%\n"
-                        f"Reference: {getattr(detection, 'reference_name', None) or 'N/A'}"
-                    )
-                    send_email_report("Drone Visual Marker Detected", body, [str(save_path)])
-                    email_sent = True
-                    print("Email notification sent successfully.")
+                    try:
+                        from email_sender import send_email_report
+
+                        body = (
+                            f"The drone camera detected the visual marker.\n"
+                            f"{detection.message}\n"
+                            f"Detection time: {first_detection_elapsed:.2f} seconds\n"
+                            f"Confidence: {detection.score * 100:.1f}%\n"
+                            f"Reference: {getattr(detection, 'reference_name', None) or 'N/A'}"
+                        )
+                        send_email_report(
+                            "Drone Visual Marker Detected",
+                            body,
+                            [str(save_path)],
+                        )
+                        email_sent = True
+                        print("Email notification sent successfully.")
+                    except ImportError as exc:
+                        print(f"Email support unavailable: {exc}")
 
             if args.show:
                 if args.marker_type == "template":
