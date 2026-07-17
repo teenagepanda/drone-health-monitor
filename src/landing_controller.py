@@ -84,6 +84,7 @@ class VisualLandingController:
         marker_image_dir: str = "reports/marker_detections",
         marker_image_interval_s: float = 5.0,
         marker_image_max_count: int = 100,
+        save_state_transition_images: bool = True,
     ):
         self.master = master
         self.enable_commands = bool(enable_commands)
@@ -109,6 +110,7 @@ class VisualLandingController:
         self.marker_image_dir = Path(marker_image_dir)
         self.marker_image_interval_s = max(float(marker_image_interval_s), 0.0)
         self.marker_image_max_count = max(int(marker_image_max_count), 0)
+        self.save_state_transition_images = bool(save_state_transition_images)
         if self.altitude_source not in {"visual", "telemetry", "auto"}:
             raise ValueError("altitude_source must be visual, telemetry or auto")
 
@@ -137,6 +139,7 @@ class VisualLandingController:
         self._land_handoff_active = False
         self._last_marker_image_time = 0.0
         self._marker_image_count = 0
+        self._last_capture_state = ""
         self.last_command = LandingCommand(False, False, False)
 
     def update(self, frame_shape, detection, telemetry, frame=None) -> LandingCommand:
@@ -262,17 +265,6 @@ class VisualLandingController:
         )
         stable = self._stable_frames >= self.stable_frames_required
 
-        saved_image_path = self._maybe_save_marker_image(
-            frame=frame,
-            detection=detection,
-            confidence=confidence,
-            reference=reference,
-            state=("CENTERED" if centered else "DETECTED"),
-            telemetry_alt=telemetry_alt,
-            visual_alt=visual_alt,
-            now=now,
-        )
-
         vx = self._clamp(
             -err_y_m * self.kp_position,
             -self.max_xy_speed_mps,
@@ -305,6 +297,11 @@ class VisualLandingController:
                     self._land_command_sent = True
                     self._land_handoff_active = True
                     state = "FINAL_LAND"
+                saved_image_path = self._maybe_save_marker_image(
+                    frame=frame, detection=detection, confidence=confidence,
+                    reference=reference, state=state, telemetry_alt=telemetry_alt,
+                    visual_alt=visual_alt, now=now,
+                )
                 cmd = self._build_command(
                     True, centered, state, confidence, reference, marker_side_px,
                     telemetry_alt, visual_alt, control_alt, altitude_source,
@@ -314,6 +311,12 @@ class VisualLandingController:
                 cmd.saved_image_path = saved_image_path
                 self.last_command = cmd
                 return cmd
+
+        saved_image_path = self._maybe_save_marker_image(
+            frame=frame, detection=detection, confidence=confidence,
+            reference=reference, state=state, telemetry_alt=telemetry_alt,
+            visual_alt=visual_alt, now=now,
+        )
 
         sent = False
         block_reason = ""
@@ -352,6 +355,7 @@ class VisualLandingController:
         self._land_handoff_active = False
         self._last_marker_image_time = 0.0
         self._marker_image_count = 0
+        self._last_capture_state = ""
         self.last_command = LandingCommand(False, False, False)
 
     def _build_command(
@@ -410,7 +414,11 @@ class VisualLandingController:
             return ""
         if self.marker_image_max_count and self._marker_image_count >= self.marker_image_max_count:
             return ""
-        if now - self._last_marker_image_time < self.marker_image_interval_s:
+        state_changed = state != self._last_capture_state
+        if (
+            not (self.save_state_transition_images and state_changed)
+            and now - self._last_marker_image_time < self.marker_image_interval_s
+        ):
             return ""
 
         try:
@@ -441,8 +449,9 @@ class VisualLandingController:
 
             self.marker_image_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            safe_state = state.lower().replace(" ", "_")
             filename = (
-                f"marker_{timestamp}_{reference}_"
+                f"marker_{timestamp}_{safe_state}_{reference}_"
                 f"conf_{confidence * 100:.1f}.jpg"
             ).replace(" ", "_")
             path = self.marker_image_dir / filename
@@ -450,6 +459,7 @@ class VisualLandingController:
                 return ""
 
             self._last_marker_image_time = now
+            self._last_capture_state = state
             self._marker_image_count += 1
             return str(path)
         except Exception:
