@@ -176,6 +176,35 @@ def _update_landing_telemetry(master, telemetry: LandingTelemetry) -> LandingTel
     return telemetry
 
 
+def _request_landing_telemetry(master) -> None:
+    """Request the MAVLink messages needed for telemetry-only landing tests.
+
+    This function only requests message rates. It does not arm the vehicle,
+    change flight mode, or send movement commands.
+    """
+    if master is None:
+        return
+
+    requested_messages = {
+        33: 5.0,   # GLOBAL_POSITION_INT
+        245: 2.0,  # EXTENDED_SYS_STATE
+    }
+    for message_id, rate_hz in requested_messages.items():
+        try:
+            interval_us = int(1_000_000 / rate_hz)
+            master.mav.command_long_send(
+                master.target_system,
+                master.target_component,
+                511,  # MAV_CMD_SET_MESSAGE_INTERVAL
+                0,
+                message_id,
+                interval_us,
+                0, 0, 0, 0, 0,
+            )
+        except Exception as exc:
+            print(f"WARNING: could not request MAVLink message {message_id}: {exc}")
+
+
 def _append_landing_log(path: Path, command: LandingCommand, elapsed: float, telemetry: LandingTelemetry) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {
@@ -303,7 +332,12 @@ def main():
         help="Maximum allowed width coefficient of variation in percent before warning. Default: 5",
     )
     parser.add_argument("--landing-controller", action="store_true", help="Run visual landing diagnostics and CSV logging")
-    parser.add_argument("--connection", default="/dev/ttyACM0", help="MAVLink connection used with --landing-controller")
+    parser.add_argument(
+        "--connect-flight-controller",
+        action="store_true",
+        help="Connect to the flight controller for telemetry only; movement commands remain disabled unless --enable-landing-commands is also supplied",
+    )
+    parser.add_argument("--connection", default="/dev/ttyACM0", help="MAVLink connection used for telemetry or landing control")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--enable-landing-commands", action="store_true", help="DANGER: send real GUIDED/LAND commands; default is dry-run")
     parser.add_argument("--final-land", action="store_true", help="Allow MAV_CMD_NAV_LAND after minimum altitude")
@@ -366,17 +400,30 @@ def main():
     master = None
     landing_controller = None
     landing_telemetry = LandingTelemetry()
+    if args.connect_flight_controller and not args.landing_controller:
+        parser.error("--connect-flight-controller requires --landing-controller")
     if args.enable_landing_commands and not args.landing_controller:
         parser.error("--enable-landing-commands requires --landing-controller")
-    if args.final_land and not args.landing_controller:
-        parser.error("--final-land requires --landing-controller")
+    if args.final_land and not args.enable_landing_commands:
+        parser.error("--final-land requires --enable-landing-commands")
     if args.landing_controller:
         from pymavlink import mavutil
-        if args.enable_landing_commands:
+
+        connect_mavlink = args.connect_flight_controller or args.enable_landing_commands
+        if connect_mavlink:
             master = mavutil.mavlink_connection(args.connection, baud=args.baud)
             print(f"Waiting for MAVLink heartbeat on {args.connection}...")
-            master.wait_heartbeat(timeout=15)
-            print(f"MAVLink connected: system={master.target_system} component={master.target_component}")
+            try:
+                master.wait_heartbeat(timeout=15)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"No MAVLink heartbeat received from {args.connection} within 15 seconds"
+                ) from exc
+            print(
+                f"MAVLink connected: system={master.target_system} "
+                f"component={master.target_component}"
+            )
+            _request_landing_telemetry(master)
         landing_controller = VisualLandingController(
             master=master,
             enable_commands=args.enable_landing_commands,
@@ -397,7 +444,12 @@ def main():
         )
         Path(args.marker_image_dir).mkdir(parents=True, exist_ok=True)
         Path(args.landing_log).parent.mkdir(parents=True, exist_ok=True)
-        mode = "REAL COMMANDS" if args.enable_landing_commands else "DRY-RUN"
+        if args.enable_landing_commands:
+            mode = "REAL COMMANDS"
+        elif args.connect_flight_controller:
+            mode = "TELEMETRY ONLY (commands disabled)"
+        else:
+            mode = "DRY-RUN (camera only)"
         print(f"Landing controller enabled: {mode} | log={args.landing_log}")
 
     cap = CameraCapture(camera_index=args.camera_index, backend=args.camera_backend)
