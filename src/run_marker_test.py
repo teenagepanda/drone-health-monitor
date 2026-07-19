@@ -12,7 +12,7 @@ import cv2
 from camera_capture import CameraCapture
 from landing_controller import LandingCommand, VisualLandingController
 
-VERSION = "V21"
+VERSION = "V21.1"
 
 
 def _marker_geometry(corners, frame_shape):
@@ -43,6 +43,112 @@ def _marker_geometry(corners, frame_shape):
         "offset_y_px": offset_y_px,
         "error_distance_px": math.hypot(offset_x_px, offset_y_px),
     }
+
+
+CALIBRATION_RAW_FIELDS = [
+    "timestamp",
+    "real_height_m",
+    "test_type",
+    "planned_offset_x_cm",
+    "planned_offset_y_cm",
+    "reference",
+    "confidence_percent",
+    "marker_width_px",
+    "marker_height_px",
+    "marker_area_px2",
+    "marker_center_x_px",
+    "marker_center_y_px",
+    "frame_center_x_px",
+    "frame_center_y_px",
+    "offset_x_px",
+    "offset_y_px",
+    "error_distance_px",
+    "offset_x_cm",
+    "offset_y_cm",
+    "error_distance_cm",
+    "image_path",
+    "processing_time_ms",
+    "fps",
+    "elapsed_s",
+]
+
+
+def _read_csv_header(path: Path) -> list[str]:
+    """Return the first CSV row, or an empty list for a missing/empty file."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+
+    with path.open("r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.reader(csv_file)
+        try:
+            return [cell.strip() for cell in next(reader)]
+        except StopIteration:
+            return []
+
+
+def _rotate_incompatible_csv(path: Path, expected_fields: list[str], label: str) -> Path | None:
+    """Rename an existing CSV when its header does not match the current schema.
+
+    The old file is preserved with a timestamp suffix. A new CSV will be created
+    automatically by the normal append function.
+    """
+    header = _read_csv_header(path)
+    if not header or header == expected_fields:
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rotated = path.with_name(f"{path.stem}_incompatible_{timestamp}{path.suffix}")
+
+    counter = 1
+    while rotated.exists():
+        rotated = path.with_name(
+            f"{path.stem}_incompatible_{timestamp}_{counter}{path.suffix}"
+        )
+        counter += 1
+
+    path.rename(rotated)
+    print(
+        f"CSV SCHEMA MISMATCH | {label} | expected {len(expected_fields)} fields, "
+        f"found {len(header)}. Old file moved to: {rotated}"
+    )
+    return rotated
+
+
+def _ensure_calibration_csv_compatibility(
+    raw_path: Path,
+    summary_path: Path,
+) -> None:
+    """Protect calibration output from mixed schemas across software versions."""
+    _rotate_incompatible_csv(raw_path, CALIBRATION_RAW_FIELDS, "raw calibration")
+
+    # The summary schema is generated from the current V21.1 summary dictionary.
+    # We only validate its core prefix here because older valid runs may contain
+    # extra summary metrics added by a compatible release.
+    summary_header = _read_csv_header(summary_path)
+    required_summary_prefix = [
+        "timestamp",
+        "real_height_m",
+        "test_type",
+        "planned_offset_x_cm",
+        "planned_offset_y_cm",
+        "samples",
+    ]
+    if summary_header and summary_header[: len(required_summary_prefix)] != required_summary_prefix:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        rotated = summary_path.with_name(
+            f"{summary_path.stem}_incompatible_{timestamp}{summary_path.suffix}"
+        )
+        counter = 1
+        while rotated.exists():
+            rotated = summary_path.with_name(
+                f"{summary_path.stem}_incompatible_{timestamp}_{counter}{summary_path.suffix}"
+            )
+            counter += 1
+        summary_path.rename(rotated)
+        print(
+            "CSV SCHEMA MISMATCH | calibration summary | "
+            f"old file moved to: {rotated}"
+        )
 
 
 
@@ -86,32 +192,7 @@ def _append_calibration_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "timestamp",
-        "real_height_m",
-        "test_type",
-        "planned_offset_x_cm",
-        "planned_offset_y_cm",
-        "reference",
-        "confidence_percent",
-        "marker_width_px",
-        "marker_height_px",
-        "marker_area_px2",
-        "marker_center_x_px",
-        "marker_center_y_px",
-        "frame_center_x_px",
-        "frame_center_y_px",
-        "offset_x_px",
-        "offset_y_px",
-        "error_distance_px",
-        "offset_x_cm",
-        "offset_y_cm",
-        "error_distance_cm",
-        "image_path",
-        "processing_time_ms",
-        "fps",
-        "elapsed_s",
-    ]
+    fieldnames = CALIBRATION_RAW_FIELDS
     write_header = not path.exists() or path.stat().st_size == 0
     with path.open("a", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
@@ -422,6 +503,11 @@ def main():
             parser.error("--calibration-max-width-cv cannot be negative")
         if args.marker_size_cm <= 0:
             parser.error("--marker-size-cm must be greater than zero")
+
+        _ensure_calibration_csv_compatibility(
+            Path(args.calibration_output),
+            Path(args.calibration_summary_output),
+        )
 
         expected_offsets = {
             "center": (0.0, 0.0),
