@@ -13,7 +13,7 @@ from camera_capture import CameraCapture
 from landing_controller import LandingCommand, VisualLandingController
 from experiment_packager import package_experiment
 
-VERSION = "V23"
+VERSION = "V24"
 
 
 def _marker_geometry(corners, frame_shape):
@@ -53,18 +53,36 @@ def _draw_centering_overlay(
     visual_alt_m: float | None = None,
     centered_threshold_cm: float = 2.0,
 ):
-    """Draw live centering guides and marker-offset measurements."""
+    """Draw a compact live overlay with centering status and direction arrow."""
     shown = frame.copy()
     frame_h, frame_w = shown.shape[:2]
     frame_center = (frame_w // 2, frame_h // 2)
 
-    # Frame-center guides.
-    cv2.line(shown, (frame_center[0], 0), (frame_center[0], frame_h - 1), (180, 180, 180), 1)
-    cv2.line(shown, (0, frame_center[1]), (frame_w - 1, frame_center[1]), (180, 180, 180), 1)
+    # Subtle frame-center guides.
+    cv2.line(
+        shown,
+        (frame_center[0], 0),
+        (frame_center[0], frame_h - 1),
+        (145, 145, 145),
+        1,
+    )
+    cv2.line(
+        shown,
+        (0, frame_center[1]),
+        (frame_w - 1, frame_center[1]),
+        (145, 145, 145),
+        1,
+    )
     cv2.circle(shown, frame_center, 7, (255, 255, 255), 2)
 
-    panel_lines = []
+    status_text = "SEARCHING"
     status_color = (0, 165, 255)
+    confidence_text = "Confidence: N/A"
+    offset_x_text = "X: N/A"
+    offset_y_text = "Y: N/A"
+    center_error_text = "Error: N/A"
+    direction_text = "Direction: N/A"
+    direction_vector = None
 
     if detection.detected and detection.corners is not None:
         geometry = _marker_geometry(detection.corners, shown.shape)
@@ -89,34 +107,80 @@ def _draw_centering_overlay(
         )
 
         centered = error_cm is not None and error_cm <= centered_threshold_cm
-        status_color = (0, 200, 0) if centered else (0, 0, 255)
+        if centered:
+            status_text = "CENTERED"
+            status_color = (0, 200, 0)
+        elif error_cm is not None and error_cm <= centered_threshold_cm * 2.5:
+            status_text = "ALMOST CENTERED"
+            status_color = (0, 165, 255)
+        else:
+            status_text = "NOT CENTERED"
+            status_color = (0, 0, 255)
 
         cv2.circle(shown, marker_center, 7, status_color, 2)
         cv2.line(shown, frame_center, marker_center, status_color, 2)
 
-        panel_lines.extend([
-            f"Offset X: {geometry['offset_x_px']:+.0f} px"
-            + (f" / {offset_x_cm:+.2f} cm" if offset_x_cm is not None else ""),
-            f"Offset Y: {geometry['offset_y_px']:+.0f} px"
-            + (f" / {offset_y_cm:+.2f} cm" if offset_y_cm is not None else ""),
-            f"Center error: {geometry['error_distance_px']:.1f} px"
-            + (f" / {error_cm:.2f} cm" if error_cm is not None else ""),
-            f"Centered: {'YES' if centered else 'NO'} (limit {centered_threshold_cm:.1f} cm)",
-        ])
-    else:
-        panel_lines.append("Marker: NOT DETECTED")
+        if offset_x_cm is not None:
+            offset_x_text = f"X: {offset_x_cm:+.2f} cm"
+        if offset_y_cm is not None:
+            offset_y_text = f"Y: {offset_y_cm:+.2f} cm"
+        if error_cm is not None:
+            center_error_text = f"Error: {error_cm:.2f} cm"
 
+        confidence = float(getattr(detection, "score", 0.0)) * 100.0
+        confidence_text = f"Confidence: {confidence:.1f}%"
+
+        # The arrow indicates the correction needed to move the camera/frame
+        # center toward the detected marker center.
+        dx = geometry["offset_x_px"]
+        dy = geometry["offset_y_px"]
+        deadband_px = max(8, int(min(frame_w, frame_h) * 0.015))
+
+        horizontal = ""
+        vertical = ""
+        if dx > deadband_px:
+            horizontal = "RIGHT"
+        elif dx < -deadband_px:
+            horizontal = "LEFT"
+
+        if dy > deadband_px:
+            vertical = "DOWN"
+        elif dy < -deadband_px:
+            vertical = "UP"
+
+        if horizontal and vertical:
+            direction_text = f"Move: {vertical}-{horizontal}"
+        elif horizontal:
+            direction_text = f"Move: {horizontal}"
+        elif vertical:
+            direction_text = f"Move: {vertical}"
+        else:
+            direction_text = "Move: HOLD"
+
+        direction_vector = (-dx, -dy)
+
+    # Compact status panel at the top-left.
+    panel_lines = []
     if visual_alt_m is not None:
-        panel_lines.insert(0, f"Visual altitude: {visual_alt_m:.2f} m")
+        panel_lines.append(f"Altitude: {visual_alt_m:.2f} m")
+    panel_lines.extend(
+        [
+            confidence_text,
+            offset_x_text,
+            offset_y_text,
+            center_error_text,
+            direction_text,
+        ]
+    )
 
-    # Semi-transparent text panel.
     x0, y0 = 12, 12
     line_h = 24
-    panel_w = min(frame_w - 24, 520)
+    panel_w = min(frame_w - 24, 320)
     panel_h = 18 + line_h * len(panel_lines)
-    overlay = shown.copy()
-    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, shown, 0.45, 0, shown)
+
+    panel = shown.copy()
+    cv2.rectangle(panel, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 0, 0), -1)
+    cv2.addWeighted(panel, 0.58, shown, 0.42, 0, shown)
 
     for index, line in enumerate(panel_lines):
         y = y0 + 22 + index * line_h
@@ -125,41 +189,59 @@ def _draw_centering_overlay(
             line,
             (x0 + 10, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.58,
-            status_color if index == len(panel_lines) - 1 else (255, 255, 255),
-            2,
+            0.52,
+            (255, 255, 255),
+            1,
             cv2.LINE_AA,
         )
 
+    # Large status badge in a separate area to avoid text overlap.
+    badge_text = status_text
+    badge_scale = 0.62
+    badge_thickness = 2
+    (badge_w, badge_h), _ = cv2.getTextSize(
+        badge_text,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        badge_scale,
+        badge_thickness,
+    )
+    badge_x = 12
+    badge_y = min(frame_h - 16, y0 + panel_h + 34)
+    cv2.rectangle(
+        shown,
+        (badge_x, badge_y - badge_h - 10),
+        (badge_x + badge_w + 20, badge_y + 8),
+        (0, 0, 0),
+        -1,
+    )
+    cv2.putText(
+        shown,
+        badge_text,
+        (badge_x + 10, badge_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        badge_scale,
+        status_color,
+        badge_thickness,
+        cv2.LINE_AA,
+    )
+
+    # Direction arrow at the frame center.
+    if direction_vector is not None and status_text != "CENTERED":
+        dx, dy = direction_vector
+        magnitude = max(1.0, (dx * dx + dy * dy) ** 0.5)
+        arrow_length = min(95.0, max(38.0, magnitude * 0.45))
+        end_x = int(frame_center[0] + arrow_length * dx / magnitude)
+        end_y = int(frame_center[1] + arrow_length * dy / magnitude)
+        cv2.arrowedLine(
+            shown,
+            frame_center,
+            (end_x, end_y),
+            status_color,
+            4,
+            tipLength=0.28,
+        )
+
     return shown
-
-
-CALIBRATION_RAW_FIELDS = [
-    "timestamp",
-    "real_height_m",
-    "test_type",
-    "planned_offset_x_cm",
-    "planned_offset_y_cm",
-    "reference",
-    "confidence_percent",
-    "marker_width_px",
-    "marker_height_px",
-    "marker_area_px2",
-    "marker_center_x_px",
-    "marker_center_y_px",
-    "frame_center_x_px",
-    "frame_center_y_px",
-    "offset_x_px",
-    "offset_y_px",
-    "error_distance_px",
-    "offset_x_cm",
-    "offset_y_cm",
-    "error_distance_cm",
-    "image_path",
-    "processing_time_ms",
-    "fps",
-    "elapsed_s",
-]
 
 
 def _read_csv_header(path: Path) -> list[str]:
