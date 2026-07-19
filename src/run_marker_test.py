@@ -11,8 +11,9 @@ import cv2
 
 from camera_capture import CameraCapture
 from landing_controller import LandingCommand, VisualLandingController
+from experiment_packager import package_experiment
 
-VERSION = "V22"
+VERSION = "V23"
 
 
 def _marker_geometry(corners, frame_shape):
@@ -580,6 +581,16 @@ def main():
     parser.add_argument("--marker-image-interval", type=float, default=5.0)
     parser.add_argument("--marker-image-max-count", type=int, default=100)
     parser.add_argument("--landing-altitude-source", choices=["visual", "telemetry", "auto"], default="visual")
+    parser.add_argument(
+        "--experiment-output-dir",
+        default="reports",
+        help="Parent directory for the experiment folder and ZIP package.",
+    )
+    parser.add_argument(
+        "--no-package-experiment",
+        action="store_true",
+        help="Disable automatic experiment folder and ZIP creation at the end.",
+    )
     args = parser.parse_args()
 
     if args.marker_size_cm <= 0:
@@ -737,6 +748,7 @@ def main():
         print(f"Calibration images will be saved to: {calibration_image_run_dir}")
 
     start = time.time()
+    experiment_started_at = start
     first_detection_elapsed = None
     best_detection = None
     last_print = 0.0
@@ -1094,6 +1106,32 @@ def main():
             print("CALIBRATION SUMMARY | no valid detections recorded; CSV was not changed.")
 
     total = time.time() - start
+
+    if not args.no_package_experiment:
+        try:
+            package_result = package_experiment(
+                reports_dir=args.experiment_output_dir,
+                started_at_epoch=experiment_started_at,
+                software_version=VERSION,
+                test_type=args.test_type if args.calibrate_height else "marker_detection",
+                real_height_m=args.real_height if args.calibrate_height else None,
+                marker_size_cm=args.marker_size_cm,
+                raw_csv=args.calibration_output,
+                summary_csv=args.calibration_summary_output,
+                landing_csv=args.landing_log,
+                calibration_image_run_dir=calibration_image_run_dir,
+                marker_image_dir=args.marker_image_dir,
+                detected_frame_path=args.save_detected_frame,
+            )
+            print(f"EXPERIMENT PACKAGE: {package_result.experiment_dir}")
+            print(f"EXPERIMENT ZIP: {package_result.zip_path}")
+            print(
+                f"Package contents: images={package_result.copied_images}, "
+                f"plots={package_result.plots_created}"
+            )
+        except Exception as exc:
+            print(f"WARNING: experiment package could not be created: {exc}")
+
     if landing_controller is not None:
         print(f"Landing CSV log: {args.landing_log}")
         print(f"Landing evidence directory: {args.marker_image_dir}")
