@@ -22,6 +22,7 @@ class ExperimentPackageResult:
     zip_path: Path
     copied_images: int
     plots_created: int
+    pdf_path: Path | None = None
 
 
 def _safe_float(value):
@@ -241,6 +242,141 @@ def _write_one_row_csv(path: Path, row: dict) -> None:
         writer.writerow(row)
 
 
+
+def _create_pdf_report(
+    experiment_dir: Path,
+    summary: dict,
+    representative_images: list[Path],
+    plots_dir: Path,
+) -> Path | None:
+    """Create a compact PDF report. Returns None when ReportLab is unavailable."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle,
+            Image,
+            PageBreak,
+        )
+    except ImportError:
+        print(
+            "ReportLab is not installed; skipping PDF creation. "
+            "Install with: python3 -m pip install reportlab"
+        )
+        return None
+
+    pdf_path = experiment_dir / "experiment_report.pdf"
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ExperimentTitle",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        spaceAfter=12,
+    )
+    heading_style = styles["Heading2"]
+    body_style = styles["BodyText"]
+
+    story = [
+        Paragraph("Visual Marker Experiment Report", title_style),
+        Paragraph(
+            f"Experiment ID: {summary.get('experiment_id', '')}",
+            body_style,
+        ),
+        Paragraph(
+            f"Software version: {summary.get('software_version', '')}",
+            body_style,
+        ),
+        Paragraph(
+            f"Created: {summary.get('created_at', '')}",
+            body_style,
+        ),
+        Spacer(1, 10),
+    ]
+
+    summary_rows = [
+        ["Metric", "Value"],
+        ["Test type", str(summary.get("test_type", ""))],
+        ["Real height (m)", str(summary.get("real_height_m", ""))],
+        ["Marker size (cm)", str(summary.get("marker_size_cm", ""))],
+        ["Samples", str(summary.get("samples", 0))],
+    ]
+
+    metric_labels = [
+        ("avg_confidence_percent", "Average confidence (%)"),
+        ("avg_offset_x_cm", "Average X offset (cm)"),
+        ("avg_offset_y_cm", "Average Y offset (cm)"),
+        ("avg_error_distance_cm", "Average radial error (cm)"),
+        ("max_error_distance_cm", "Maximum radial error (cm)"),
+        ("avg_fps", "Average FPS"),
+        ("avg_processing_time_ms", "Average processing time (ms)"),
+    ]
+    for key, label in metric_labels:
+        value = summary.get(key)
+        if isinstance(value, (int, float)):
+            summary_rows.append([label, f"{value:.3f}"])
+
+    table = Table(summary_rows, colWidths=[9.5 * cm, 6 * cm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.extend([table, Spacer(1, 14)])
+
+    existing_representatives = [p for p in representative_images if p.exists()]
+    if existing_representatives:
+        story.append(Paragraph("Representative Images", heading_style))
+        for image_path in existing_representatives:
+            story.append(Paragraph(image_path.stem.replace("_", " "), body_style))
+            image = Image(str(image_path))
+            max_w, max_h = 16.5 * cm, 18.0 * cm
+            scale = min(max_w / image.imageWidth, max_h / image.imageHeight, 1.0)
+            image.drawWidth = image.imageWidth * scale
+            image.drawHeight = image.imageHeight * scale
+            story.extend([image, Spacer(1, 10)])
+
+    plot_paths = sorted(plots_dir.glob("*.png"))
+    if plot_paths:
+        story.append(PageBreak())
+        story.append(Paragraph("Experiment Plots", heading_style))
+        for plot_path in plot_paths:
+            story.append(Paragraph(plot_path.stem.replace("_", " "), body_style))
+            image = Image(str(plot_path))
+            max_w, max_h = 17.0 * cm, 10.5 * cm
+            scale = min(max_w / image.imageWidth, max_h / image.imageHeight, 1.0)
+            image.drawWidth = image.imageWidth * scale
+            image.drawHeight = image.imageHeight * scale
+            story.extend([image, Spacer(1, 12)])
+
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        rightMargin=1.5 * cm,
+        leftMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+        title="Visual Marker Experiment Report",
+        author="Drone Health Monitor",
+    )
+    doc.build(story)
+    return pdf_path
+
 def package_experiment(
     reports_dir: str | Path,
     started_at_epoch: float,
@@ -363,6 +499,13 @@ def package_experiment(
         summary,
     )
 
+    pdf_path = _create_pdf_report(
+        experiment_dir=experiment_dir,
+        summary=summary,
+        representative_images=representative_images,
+        plots_dir=plots_dir,
+    )
+
     manifest_lines = [
         f"Experiment directory: {experiment_dir}",
         f"Raw samples included: {len(run_rows)}",
@@ -390,4 +533,5 @@ def package_experiment(
         zip_path=zip_path,
         copied_images=len(copied_images),
         plots_created=plots_created,
+        pdf_path=pdf_path,
     )

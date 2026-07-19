@@ -13,7 +13,35 @@ from camera_capture import CameraCapture
 from landing_controller import LandingCommand, VisualLandingController
 from experiment_packager import package_experiment
 
-VERSION = "V24"
+VERSION = "V24.1"
+
+CALIBRATION_RAW_FIELDS = [
+    "timestamp",
+    "real_height_m",
+    "test_type",
+    "planned_offset_x_cm",
+    "planned_offset_y_cm",
+    "reference",
+    "confidence_percent",
+    "marker_width_px",
+    "marker_height_px",
+    "marker_area_px2",
+    "marker_center_x_px",
+    "marker_center_y_px",
+    "frame_center_x_px",
+    "frame_center_y_px",
+    "offset_x_px",
+    "offset_y_px",
+    "error_distance_px",
+    "offset_x_cm",
+    "offset_y_cm",
+    "error_distance_cm",
+    "image_path",
+    "processing_time_ms",
+    "fps",
+    "elapsed_s",
+]
+
 
 
 def _marker_geometry(corners, frame_shape):
@@ -1211,6 +1239,8 @@ def main():
                 f"Package contents: images={package_result.copied_images}, "
                 f"plots={package_result.plots_created}"
             )
+            if getattr(package_result, "pdf_path", None):
+                print(f"EXPERIMENT PDF: {package_result.pdf_path}")
         except Exception as exc:
             print(f"WARNING: experiment package could not be created: {exc}")
 
