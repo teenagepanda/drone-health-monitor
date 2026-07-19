@@ -186,16 +186,61 @@ class MavlinkReader:
             self.telemetry.last_message_time = now
 
             if msg_type == "HEARTBEAT":
-                self.telemetry.heartbeat_count += 1
-                self.telemetry.last_heartbeat_time = now
-                self.telemetry.armed = bool(
-                    msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+                # MAVLink may contain heartbeats from a GCS, companion computer,
+                # telemetry radio or other components. Only an autopilot
+                # heartbeat carries the ArduCopter flight mode reliably.
+                src_system = msg.get_srcSystem()
+                src_component = msg.get_srcComponent()
+                is_target_system = (
+                    self.master.target_system in (0, src_system)
+                    or src_system == self.master.target_system
                 )
-                self.telemetry.system_status = int(msg.system_status)
-                try:
-                    self.telemetry.mode = mavutil.mode_string_v10(msg)
-                except Exception:
-                    self.telemetry.mode = "UNKNOWN"
+                is_autopilot_component = (
+                    src_component == mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
+                )
+                is_real_autopilot = (
+                    int(getattr(msg, "autopilot", mavutil.mavlink.MAV_AUTOPILOT_INVALID))
+                    != mavutil.mavlink.MAV_AUTOPILOT_INVALID
+                    and int(getattr(msg, "type", mavutil.mavlink.MAV_TYPE_GCS))
+                    != mavutil.mavlink.MAV_TYPE_GCS
+                )
+
+                if is_target_system and is_autopilot_component and is_real_autopilot:
+                    self.telemetry.heartbeat_count += 1
+                    self.telemetry.last_heartbeat_time = now
+                    self.telemetry.armed = bool(
+                        msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+                    )
+                    self.telemetry.system_status = int(msg.system_status)
+
+                    try:
+                        mode_name = mavutil.mode_string_v10(msg)
+                    except Exception:
+                        mode_name = None
+
+                    # mode_string_v10 may return a generic Mode(0x...) string
+                    # when it cannot identify the vehicle mapping. Fall back to
+                    # the connection's ArduPilot mode mapping.
+                    if (
+                        not mode_name
+                        or mode_name == "UNKNOWN"
+                        or mode_name.startswith("Mode(")
+                    ):
+                        try:
+                            mapping = self.master.mode_mapping() or {}
+                            reverse_mapping = {
+                                int(mode_number): str(mode_label)
+                                for mode_label, mode_number in mapping.items()
+                            }
+                            mode_name = reverse_mapping.get(
+                                int(getattr(msg, "custom_mode", -1))
+                            )
+                        except Exception:
+                            mode_name = None
+
+                    self.telemetry.mode = mode_name or (
+                        f"UNKNOWN({int(getattr(msg, 'custom_mode', -1))})"
+                    )
 
             elif msg_type == "SYS_STATUS":
                 if msg.voltage_battery != 65535:
