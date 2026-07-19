@@ -91,6 +91,10 @@ class DroneTelemetry:
     param_fs_batt_enable: Optional[float] = None
     param_fs_gcs_enable: Optional[float] = None
     param_fs_ekf_action: Optional[float] = None
+    param_batt_fs_low_act: Optional[float] = None
+    param_batt_fs_crt_act: Optional[float] = None
+    param_batt_low_volt: Optional[float] = None
+    param_batt_crt_volt: Optional[float] = None
     param_rtl_alt: Optional[float] = None
 
     last_statustext: Optional[str] = None
@@ -132,6 +136,10 @@ class MavlinkReader:
         self._request_param("FS_BATT_ENABLE")
         self._request_param("FS_GCS_ENABLE")
         self._request_param("FS_EKF_ACTION")
+        self._request_param("BATT_FS_LOW_ACT")
+        self._request_param("BATT_FS_CRT_ACT")
+        self._request_param("BATT_LOW_VOLT")
+        self._request_param("BATT_CRT_VOLT")
         self._request_param("RTL_ALT")
 
     def _request_message_interval(self, message_name: str, hz: float) -> None:
@@ -284,6 +292,10 @@ class MavlinkReader:
                 "FS_BATT_ENABLE": "param_fs_batt_enable",
                 "FS_GCS_ENABLE": "param_fs_gcs_enable",
                 "FS_EKF_ACTION": "param_fs_ekf_action",
+                "BATT_FS_LOW_ACT": "param_batt_fs_low_act",
+                "BATT_FS_CRT_ACT": "param_batt_fs_crt_act",
+                "BATT_LOW_VOLT": "param_batt_low_volt",
+                "BATT_CRT_VOLT": "param_batt_crt_volt",
                 "RTL_ALT": "param_rtl_alt",
             }
             attr = mapping.get(param_id)
