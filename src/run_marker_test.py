@@ -1,5 +1,6 @@
 import argparse
 import csv
+import math
 import statistics
 import time
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ import cv2
 
 from camera_capture import CameraCapture
 from landing_controller import LandingCommand, VisualLandingController
+
+VERSION = "V21"
 
 
 def _marker_geometry(corners, frame_shape):
@@ -24,12 +27,21 @@ def _marker_geometry(corners, frame_shape):
     frame_h, frame_w = frame_shape[:2]
     center_x = int(pts[:, 0].mean())
     center_y = int(pts[:, 1].mean())
+    frame_center_x = frame_w // 2
+    frame_center_y = frame_h // 2
+    offset_x_px = center_x - frame_center_x
+    offset_y_px = center_y - frame_center_y
     return {
         "marker_width_px": marker_width_px,
         "marker_height_px": marker_height_px,
         "marker_area_px2": marker_area_px2,
-        "offset_x_px": center_x - frame_w // 2,
-        "offset_y_px": center_y - frame_h // 2,
+        "marker_center_x_px": center_x,
+        "marker_center_y_px": center_y,
+        "frame_center_x_px": frame_center_x,
+        "frame_center_y_px": frame_center_y,
+        "offset_x_px": offset_x_px,
+        "offset_y_px": offset_y_px,
+        "error_distance_px": math.hypot(offset_x_px, offset_y_px),
     }
 
 
@@ -85,8 +97,17 @@ def _append_calibration_csv(path: Path, rows: list[dict]) -> None:
         "marker_width_px",
         "marker_height_px",
         "marker_area_px2",
+        "marker_center_x_px",
+        "marker_center_y_px",
+        "frame_center_x_px",
+        "frame_center_y_px",
         "offset_x_px",
         "offset_y_px",
+        "error_distance_px",
+        "offset_x_cm",
+        "offset_y_cm",
+        "error_distance_cm",
+        "image_path",
         "processing_time_ms",
         "fps",
         "elapsed_s",
@@ -244,7 +265,7 @@ def _append_landing_log(path: Path, command: LandingCommand, elapsed: float, tel
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run camera test for visual-marker detection")
+    parser = argparse.ArgumentParser(description=f"Run camera test for visual-marker detection ({VERSION})")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index, usually 0")
     parser.add_argument("--camera-backend", choices=["auto", "picamera2", "opencv"], default="auto")
     parser.add_argument("--marker-type", choices=["aruco", "template"], default="template")
@@ -331,6 +352,22 @@ def main():
         default=5.0,
         help="Maximum allowed width coefficient of variation in percent before warning. Default: 5",
     )
+    parser.add_argument(
+        "--calibration-image-dir",
+        default="reports/calibration_images",
+        help="Directory for annotated calibration sample images",
+    )
+    parser.add_argument(
+        "--save-calibration-images",
+        action="store_true",
+        help="Save one annotated image for every accepted calibration sample",
+    )
+    parser.add_argument(
+        "--marker-size-cm",
+        type=float,
+        default=20.0,
+        help="Printed marker side length in centimeters, used for pixel-to-cm conversion. Default: 20",
+    )
     parser.add_argument("--landing-controller", action="store_true", help="Run visual landing diagnostics and CSV logging")
     parser.add_argument(
         "--connect-flight-controller",
@@ -383,6 +420,8 @@ def main():
             parser.error("--calibration-min-confidence must be between 0 and 100")
         if args.calibration_max_width_cv < 0:
             parser.error("--calibration-max-width-cv cannot be negative")
+        if args.marker_size_cm <= 0:
+            parser.error("--marker-size-cm must be greater than zero")
 
         expected_offsets = {
             "center": (0.0, 0.0),
@@ -491,7 +530,7 @@ def main():
     cap.open()
     print(f"Camera backend: {cap.active_backend}")
     print(f"Marker detector: {detector_description}")
-    print(f"Visual marker test started for {args.duration} seconds.")
+    print(f"Visual marker test {VERSION} started for {args.duration} seconds.")
     print("Show the marker to the camera. Press q to stop if --show is used.")
     if args.calibrate_height:
         print(
@@ -504,6 +543,16 @@ def main():
             f"Calibration reference lock: '{args.calibration_reference_name}' only | "
             f"file={detector_reference}"
         )
+
+    calibration_image_run_dir = None
+    if args.calibrate_height and args.save_calibration_images:
+        height_label = f"{args.real_height:.2f}m".replace(".", "p")
+        run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        calibration_image_run_dir = (
+            Path(args.calibration_image_dir) / height_label / args.test_type / run_stamp
+        )
+        calibration_image_run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Calibration images will be saved to: {calibration_image_run_dir}")
 
     start = time.time()
     first_detection_elapsed = None
@@ -605,8 +654,29 @@ def main():
 
                 if now - last_calibration_record >= args.calibration_interval:
                     geometry = _marker_geometry(detection.corners, frame.shape)
+                    # Convert image-plane pixel error to centimeters using the observed marker width.
+                    # This is a local scale approximation: printed_marker_width_cm / detected_marker_width_px.
+                    cm_per_px = (args.marker_size_cm / geometry["marker_width_px"]) if geometry["marker_width_px"] > 0 else None
+                    offset_x_cm = geometry["offset_x_px"] * cm_per_px if cm_per_px is not None else None
+                    offset_y_cm = geometry["offset_y_px"] * cm_per_px if cm_per_px is not None else None
+                    error_distance_cm = geometry["error_distance_px"] * cm_per_px if cm_per_px is not None else None
+
+                    sample_number = len(calibration_rows) + 1
+                    image_path = ""
+                    if calibration_image_run_dir is not None:
+                        image_file = calibration_image_run_dir / f"sample_{sample_number:03d}.jpg"
+                        annotated = base_draw(
+                            frame,
+                            detection,
+                            elapsed_s=elapsed,
+                            fps=fps,
+                            system_state="CALIBRATING",
+                        )
+                        cv2.imwrite(str(image_file), annotated)
+                        image_path = str(image_file)
+
                     row = {
-                        "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "timestamp": datetime.now().isoformat(timespec="milliseconds"),
                         "real_height_m": args.real_height,
                         "test_type": args.test_type,
                         "planned_offset_x_cm": args.offset_x,
@@ -614,6 +684,10 @@ def main():
                         "reference": getattr(detection, "reference_name", None) or "N/A",
                         "confidence_percent": confidence_percent,
                         **geometry,
+                        "offset_x_cm": offset_x_cm,
+                        "offset_y_cm": offset_y_cm,
+                        "error_distance_cm": error_distance_cm,
+                        "image_path": image_path,
                         "processing_time_ms": getattr(detection, "processing_time_s", 0.0) * 1000.0,
                         "fps": fps,
                         "elapsed_s": elapsed,
@@ -710,6 +784,12 @@ def main():
             fps_values = [row["fps"] for row in calibration_rows]
             processing_values = [row["processing_time_ms"] for row in calibration_rows]
             elapsed_values = [row["elapsed_s"] for row in calibration_rows]
+            offset_x_values = [row["offset_x_px"] for row in calibration_rows]
+            offset_y_values = [row["offset_y_px"] for row in calibration_rows]
+            distance_values = [row["error_distance_px"] for row in calibration_rows]
+            offset_x_cm_values = [row["offset_x_cm"] for row in calibration_rows if row["offset_x_cm"] is not None]
+            offset_y_cm_values = [row["offset_y_cm"] for row in calibration_rows if row["offset_y_cm"] is not None]
+            distance_cm_values = [row["error_distance_cm"] for row in calibration_rows if row["error_distance_cm"] is not None]
 
             def sample_stdev(values):
                 return statistics.stdev(values) if len(values) > 1 else 0.0
@@ -731,6 +811,23 @@ def main():
                 "stdev_confidence_percent": sample_stdev(confidences),
                 "avg_fps": statistics.mean(fps_values),
                 "avg_processing_time_ms": statistics.mean(processing_values),
+                "avg_offset_x_px": statistics.mean(offset_x_values),
+                "stdev_offset_x_px": sample_stdev(offset_x_values),
+                "avg_offset_y_px": statistics.mean(offset_y_values),
+                "stdev_offset_y_px": sample_stdev(offset_y_values),
+                "avg_error_distance_px": statistics.mean(distance_values),
+                "stdev_error_distance_px": sample_stdev(distance_values),
+                "min_error_distance_px": min(distance_values),
+                "max_error_distance_px": max(distance_values),
+                "avg_offset_x_cm": statistics.mean(offset_x_cm_values) if offset_x_cm_values else "",
+                "stdev_offset_x_cm": sample_stdev(offset_x_cm_values) if offset_x_cm_values else "",
+                "avg_offset_y_cm": statistics.mean(offset_y_cm_values) if offset_y_cm_values else "",
+                "stdev_offset_y_cm": sample_stdev(offset_y_cm_values) if offset_y_cm_values else "",
+                "avg_error_distance_cm": statistics.mean(distance_cm_values) if distance_cm_values else "",
+                "stdev_error_distance_cm": sample_stdev(distance_cm_values) if distance_cm_values else "",
+                "min_error_distance_cm": min(distance_cm_values) if distance_cm_values else "",
+                "max_error_distance_cm": max(distance_cm_values) if distance_cm_values else "",
+                "saved_images": sum(1 for row in calibration_rows if row.get("image_path")),
                 "first_accepted_sample_elapsed_s": min(elapsed_values),
                 "last_accepted_sample_elapsed_s": max(elapsed_values),
             }
@@ -749,6 +846,18 @@ def main():
                 f"avg height={statistics.mean(heights):.1f}px | avg area={statistics.mean(areas):.0f}px^2 | "
                 f"avg confidence={statistics.mean(confidences):.1f}% | avg FPS={statistics.mean(fps_values):.1f}"
             )
+            print(
+                f"CENTERING SUMMARY | avg X={statistics.mean(offset_x_values):+.1f}px | "
+                f"avg Y={statistics.mean(offset_y_values):+.1f}px | "
+                f"avg radial error={statistics.mean(distance_values):.1f}px | "
+                f"max radial error={max(distance_values):.1f}px"
+            )
+            if distance_cm_values:
+                print(
+                    f"CENTERING SUMMARY CM | avg radial error={statistics.mean(distance_cm_values):.2f}cm | "
+                    f"max radial error={max(distance_cm_values):.2f}cm | marker size={args.marker_size_cm:.1f}cm"
+                )
+
             print(
                 f"CALIBRATION QUALITY {quality_status} | accepted={len(calibration_rows)} | "
                 f"rejected_reference={rejected_reference_count} | "
