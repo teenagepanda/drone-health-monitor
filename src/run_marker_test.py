@@ -12,7 +12,7 @@ import cv2
 from camera_capture import CameraCapture
 from landing_controller import LandingCommand, VisualLandingController
 
-VERSION = "V21.1"
+VERSION = "V22"
 
 
 def _marker_geometry(corners, frame_shape):
@@ -43,6 +43,94 @@ def _marker_geometry(corners, frame_shape):
         "offset_y_px": offset_y_px,
         "error_distance_px": math.hypot(offset_x_px, offset_y_px),
     }
+
+
+def _draw_centering_overlay(
+    frame,
+    detection,
+    marker_size_cm: float,
+    visual_alt_m: float | None = None,
+    centered_threshold_cm: float = 2.0,
+):
+    """Draw live centering guides and marker-offset measurements."""
+    shown = frame.copy()
+    frame_h, frame_w = shown.shape[:2]
+    frame_center = (frame_w // 2, frame_h // 2)
+
+    # Frame-center guides.
+    cv2.line(shown, (frame_center[0], 0), (frame_center[0], frame_h - 1), (180, 180, 180), 1)
+    cv2.line(shown, (0, frame_center[1]), (frame_w - 1, frame_center[1]), (180, 180, 180), 1)
+    cv2.circle(shown, frame_center, 7, (255, 255, 255), 2)
+
+    panel_lines = []
+    status_color = (0, 165, 255)
+
+    if detection.detected and detection.corners is not None:
+        geometry = _marker_geometry(detection.corners, shown.shape)
+        marker_center = (
+            int(geometry["marker_center_x_px"]),
+            int(geometry["marker_center_y_px"]),
+        )
+
+        cm_per_px = (
+            marker_size_cm / geometry["marker_width_px"]
+            if geometry["marker_width_px"] > 0
+            else None
+        )
+        offset_x_cm = (
+            geometry["offset_x_px"] * cm_per_px if cm_per_px is not None else None
+        )
+        offset_y_cm = (
+            geometry["offset_y_px"] * cm_per_px if cm_per_px is not None else None
+        )
+        error_cm = (
+            geometry["error_distance_px"] * cm_per_px if cm_per_px is not None else None
+        )
+
+        centered = error_cm is not None and error_cm <= centered_threshold_cm
+        status_color = (0, 200, 0) if centered else (0, 0, 255)
+
+        cv2.circle(shown, marker_center, 7, status_color, 2)
+        cv2.line(shown, frame_center, marker_center, status_color, 2)
+
+        panel_lines.extend([
+            f"Offset X: {geometry['offset_x_px']:+.0f} px"
+            + (f" / {offset_x_cm:+.2f} cm" if offset_x_cm is not None else ""),
+            f"Offset Y: {geometry['offset_y_px']:+.0f} px"
+            + (f" / {offset_y_cm:+.2f} cm" if offset_y_cm is not None else ""),
+            f"Center error: {geometry['error_distance_px']:.1f} px"
+            + (f" / {error_cm:.2f} cm" if error_cm is not None else ""),
+            f"Centered: {'YES' if centered else 'NO'} (limit {centered_threshold_cm:.1f} cm)",
+        ])
+    else:
+        panel_lines.append("Marker: NOT DETECTED")
+
+    if visual_alt_m is not None:
+        panel_lines.insert(0, f"Visual altitude: {visual_alt_m:.2f} m")
+
+    # Semi-transparent text panel.
+    x0, y0 = 12, 12
+    line_h = 24
+    panel_w = min(frame_w - 24, 520)
+    panel_h = 18 + line_h * len(panel_lines)
+    overlay = shown.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, shown, 0.45, 0, shown)
+
+    for index, line in enumerate(panel_lines):
+        y = y0 + 22 + index * line_h
+        cv2.putText(
+            shown,
+            line,
+            (x0 + 10, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            status_color if index == len(panel_lines) - 1 else (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return shown
 
 
 CALIBRATION_RAW_FIELDS = [
@@ -449,6 +537,12 @@ def main():
         default=20.0,
         help="Printed marker side length in centimeters, used for pixel-to-cm conversion. Default: 20",
     )
+    parser.add_argument(
+        "--centering-threshold-cm",
+        type=float,
+        default=2.0,
+        help="Maximum radial offset considered centered in the live overlay. Default: 2 cm",
+    )
     parser.add_argument("--landing-controller", action="store_true", help="Run visual landing diagnostics and CSV logging")
     parser.add_argument(
         "--connect-flight-controller",
@@ -488,6 +582,11 @@ def main():
     parser.add_argument("--landing-altitude-source", choices=["visual", "telemetry", "auto"], default="visual")
     args = parser.parse_args()
 
+    if args.marker_size_cm <= 0:
+        parser.error("--marker-size-cm must be greater than zero")
+    if args.centering_threshold_cm <= 0:
+        parser.error("--centering-threshold-cm must be greater than zero")
+
     if args.calibrate_height:
         if args.marker_type != "template":
             parser.error("--calibrate-height currently requires --marker-type template")
@@ -501,9 +600,6 @@ def main():
             parser.error("--calibration-min-confidence must be between 0 and 100")
         if args.calibration_max_width_cv < 0:
             parser.error("--calibration-max-width-cv cannot be negative")
-        if args.marker_size_cm <= 0:
-            parser.error("--marker-size-cm must be greater than zero")
-
         _ensure_calibration_csv_compatibility(
             Path(args.calibration_output),
             Path(args.calibration_summary_output),
@@ -758,6 +854,13 @@ def main():
                             fps=fps,
                             system_state="CALIBRATING",
                         )
+                        annotated = _draw_centering_overlay(
+                            annotated,
+                            detection,
+                            marker_size_cm=args.marker_size_cm,
+                            visual_alt_m=args.real_height,
+                            centered_threshold_cm=args.centering_threshold_cm,
+                        )
                         cv2.imwrite(str(image_file), annotated)
                         image_path = str(image_file)
 
@@ -817,6 +920,18 @@ def main():
                     annotated = base_draw(frame, detection, elapsed_s=elapsed, fps=fps, system_state="DETECTED")
                 else:
                     annotated = base_draw(frame, detection)
+                detected_visual_alt = (
+                    landing_command.visual_alt_m
+                    if landing_command is not None
+                    else (args.real_height if args.calibrate_height else None)
+                )
+                annotated = _draw_centering_overlay(
+                    annotated,
+                    detection,
+                    marker_size_cm=args.marker_size_cm,
+                    visual_alt_m=detected_visual_alt,
+                    centered_threshold_cm=args.centering_threshold_cm,
+                )
                 cv2.imwrite(str(save_path), annotated)
                 print(f"Detected frame saved: {save_path}")
 
@@ -847,6 +962,20 @@ def main():
                     shown = base_draw(frame, detection, elapsed_s=elapsed, fps=fps, system_state=state)
                 else:
                     shown = base_draw(frame, detection)
+
+                visual_altitude = None
+                if landing_command is not None:
+                    visual_altitude = landing_command.visual_alt_m
+                elif args.calibrate_height:
+                    visual_altitude = args.real_height
+
+                shown = _draw_centering_overlay(
+                    shown,
+                    detection,
+                    marker_size_cm=args.marker_size_cm,
+                    visual_alt_m=visual_altitude,
+                    centered_threshold_cm=args.centering_threshold_cm,
+                )
                 cv2.imshow("Visual Marker Test", shown)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
